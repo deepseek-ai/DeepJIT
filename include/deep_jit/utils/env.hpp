@@ -45,6 +45,8 @@ inline T get_env(const std::string& name, const T& default_value = T()) {
         return parse_integer<long long>(raw, name) != 0;
     } else if constexpr (std::is_integral_v<T>) {
         return parse_integer<T>(raw, name);
+    } else if constexpr (std::is_enum_v<T>) {
+        return static_cast<T>(parse_integer<std::underlying_type_t<T>>(raw, name));
     } else {
         DJ_STATIC_ASSERT((std::is_same_v<T, void>), "unsupported type for get_env");
         return T();
