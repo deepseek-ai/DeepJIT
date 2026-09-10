@@ -1,6 +1,11 @@
 #pragma once
 
-#include <elfutils/libdwfl.h>
+#if defined(__has_include)
+#    if __has_include(<elfutils/libdwfl.h>)
+#        include <elfutils/libdwfl.h>
+#        define DJ_HAS_LIBDW 1
+#    endif
+#endif
 
 #include <array>
 #include <cstdint>
@@ -17,6 +22,8 @@
 namespace deep_jit::exception {
 
 namespace detail {
+
+#ifdef DJ_HAS_LIBDW
 
 struct DwflApi {
     struct FrameInfo {
@@ -95,6 +102,25 @@ struct DwflApi {
         return result;
     }
 };
+
+#else
+
+// `libdw` headers are unavailable at build time. Backtraces fall back to
+// `dladdr` only: they keep demangled function names but report "??:0" for the
+// file and line of each frame. Install the elfutils development headers to
+// restore them.
+struct DwflApi {
+    struct FrameInfo {
+        const char* function = nullptr;
+        std::string file_line = "??:0";
+    };
+
+    bool valid() const { return false; }
+    void refresh() const {}
+    FrameInfo find(const std::uintptr_t) const { return {}; }
+};
+
+#endif
 
 inline bool is_python_frame(const Dl_info& info) {
     if (info.dli_sname != nullptr) {
