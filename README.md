@@ -1,39 +1,40 @@
 # DeepJIT
 
-DeepJIT is a lightweight, header-only C++20 JIT runtime for **NVIDIA CUDA GPUs** and **HUAWEI Ascend (昇腾) NPUs**. It gives C++/Python extension authors a shared interface for compiling kernel source at runtime, caching the resulting binaries, loading them onto the device, and launching them with backend-specific options.
+DeepJIT is a lightweight, header-only C++20 JIT runtime for **NVIDIA CUDA GPUs**, **AMD ROCm GPUs**, and **HUAWEI Ascend (昇腾) NPUs**. It gives C++/Python extension authors a shared interface for compiling kernel source at runtime, caching the resulting binaries, loading them onto the device, and launching them with backend-specific options.
 
-DeepJIT handles the JIT infrastructure so that kernel libraries can focus on their device code. Both backends share runtime configuration, source and include hashing, in-memory and on-disk caches, and lazy initialization. Kernel source and compiler/launch options remain specific to the selected backend.
+DeepJIT handles the JIT infrastructure so that kernel libraries can focus on their device code. All backends share runtime configuration, source and include hashing, in-memory and on-disk caches, and lazy initialization. Kernel source and compiler/launch options remain specific to the selected backend.
 
 **Main authors:** [@guyan364](https://github.com/guyan364), [@kurisu6912](https://github.com/kurisu6912), [@LyricZhao](https://github.com/LyricZhao).
 
 ## Features
 
-- **CUDA and Ascend backends:** use `deep_jit::Runtime<deep_jit::CUDA>` or `deep_jit::Runtime<deep_jit::Ascend>` with the same compile/load/launch workflow.
+- **CUDA, ROCm, and Ascend backends:** use `deep_jit::Runtime<deep_jit::CUDA>`, `deep_jit::Runtime<deep_jit::ROCm>`, or `deep_jit::Runtime<deep_jit::Ascend>` with the same compile/load/launch workflow.
 - **Kernel caching:** reuse loaded kernels in memory and compiled artifacts on disk. Cache keys account for source, tracked includes, compiler versions, effective compiler options, and an application-provided dependency signature.
-- **Distributed filesystems and shared caches:** share one cache directory across users, processes, and nodes to reuse compiled kernels. Both backends support local and distributed filesystems with the required POSIX filesystem semantics; see [Shared cache](#shared-cache) for configuration.
+- **Distributed filesystems and shared caches:** share one cache directory across users, processes, and nodes to reuse compiled kernels. All backends support local and distributed filesystems with the required POSIX filesystem semantics; see [Shared cache](#shared-cache) for configuration.
 - **Lazy initialization:** defer device and compiler discovery until the runtime is first used.
-- **PyTorch integration:** use the current PyTorch CUDA or `torch_npu` stream by default, and expose the configured runtime through pybind11 with `get_jit()`.
-- **Compilation controls and diagnostics:** configure runtime defaults and per-kernel overrides, inspect compilation metadata, and dump CUDA PTX/SASS or Ascend assembly. CUDA also supports a Python post-compilation hook.
+- **PyTorch integration:** use the current PyTorch CUDA/HIP or `torch_npu` stream by default, and expose the configured runtime through pybind11 with `get_jit()`.
+- **Compilation controls and diagnostics:** configure runtime defaults and per-kernel overrides, inspect compilation metadata, and dump CUDA PTX/SASS, ROCm LLVM IR/ISA, or Ascend assembly. CUDA and ROCm also support a Python post-compilation hook.
 
 ### In development (WIP)
 
 - **Cache warmup from history:** use historical cache entries to anticipate kernels that future runs may need and warm up their cache in advance, reducing compilation delays during execution. This feature is under development and is not yet available.
-- **Python compilation API:** pass kernel source code directly from Python to compile CUDA or Ascend kernels. This feature is under development and is not yet available.
+- **Python compilation API:** pass kernel source code directly from Python to compile CUDA, ROCm, or Ascend kernels. This feature is under development and is not yet available.
 
 ## Supported backends
 
 | Backend | Device toolchain and runtime | Integration requirements |
 | --- | --- | --- |
 | **CUDA** | NVCC compiles CUDA source to CUBIN; the CUDA Driver API loads and launches kernels. | CUDA headers 12.4+, NVCC 12.9+, and PyTorch with CUDA support. |
+| **ROCm** | HIPCC compiles HIP source to an AMD code object; HIP library APIs discover, load, and launch the kernel. | ROCm 10 Core SDK development headers, HIPCC/Clang, `libamdhip64.so` with the library enumeration APIs, and ROCm-enabled PyTorch. |
 | **Ascend** | Bisheng and ld.lld compile and link Ascend kernel source; ACL loads and launches kernels. | CANN with `bin/bisheng`, `bin/ld.lld`, and the Ascend `adv_api` headers; ACL and `torch_npu` headers and runtime. |
 
 The host environment must provide Linux, a C++20 compiler and standard library with `std::format` support, Python, pybind11, and the dependencies for the selected backend. DeepJIT is intended to be embedded into your extension as a header-only dependency.
 
-See [Integration](#integration) for setup, [CUDA](#cuda) for GPU usage, and [Ascend](#ascend) for NPU usage.
+See [Integration](#integration) for setup, [CUDA](#cuda) and [ROCm](#rocm) for GPU usage, and [Ascend](#ascend) for NPU usage.
 
 ## Shared cache
 
-CUDA and Ascend use the same disk-cache implementation. It supports local and distributed filesystems that provide atomic directory rename within a filesystem and file/directory `fsync`. Builds use unique temporary directories, synchronize their contents, and publish complete entries through an atomic rename. Concurrent processes can compile the same entry and reuse the published result.
+CUDA, ROCm, and Ascend use the same disk-cache implementation. It supports local and distributed filesystems that provide atomic directory rename within a filesystem and file/directory `fsync`. Builds use unique temporary directories, synchronize their contents, and publish complete entries through an atomic rename. Concurrent processes can compile the same entry and reuse the published result.
 
 Multiple users, processes, and nodes can point to the same cache directory:
 
@@ -57,12 +58,13 @@ DeepJIT searches all roots in order and writes cache misses only to the first ro
 | --- | --- |
 | [`include/deep_jit/runtime/`](include/deep_jit/runtime/) | Shared runtime and configuration. |
 | [`include/deep_jit/backend/cuda/`](include/deep_jit/backend/cuda/) | CUDA compiler, device queries, kernel loading, and launch options. |
+| [`include/deep_jit/backend/rocm/`](include/deep_jit/backend/rocm/) | HIP compiler, device queries, code-object loading, and launch options. |
 | [`include/deep_jit/backend/ascend/`](include/deep_jit/backend/ascend/) | Ascend compiler/linker integration, device queries, kernel loading, and launch options. |
 | [`include/deep_jit/cache/`](include/deep_jit/cache/) | In-memory and on-disk kernel caches. |
 | [`include/deep_jit/python_api.hpp`](include/deep_jit/python_api.hpp) | pybind11 registration for a consumer library's runtime. |
-| [`tests/`](tests/) | CUDA and Ascend integration tests, example extensions, and device kernels. |
+| [`tests/`](tests/) | CUDA, ROCm, and Ascend integration tests, example extensions, and device kernels. |
 
-The root `CMakeLists.txt` is for debugging and IDE indexing. Integrate the headers into your own extension as described below; the projects under [`tests/test_cuda_proj/`](tests/test_cuda_proj/) and [`tests/test_ascend_proj/`](tests/test_ascend_proj/) provide working integration examples.
+The root `CMakeLists.txt` is for debugging and IDE indexing. Integrate the headers into your own extension as described below; the projects under [`tests/test_cuda_proj/`](tests/test_cuda_proj/) and [`tests/test_ascend_proj/`](tests/test_ascend_proj/) provide working integration examples. [`tests/test_rocm.py`](tests/test_rocm.py) builds the ROCm example extension without CUDA or a HIP-language CMake target. The optional root module does not select or require any backend.
 
 ## Integration
 
@@ -78,6 +80,12 @@ Include exactly one backend entry header. For CUDA:
 #include <deep_jit/backend/cuda/backend.hpp>
 ```
 
+For ROCm:
+
+```cpp
+#include <deep_jit/backend/rocm/backend.hpp>
+```
+
 For Ascend:
 
 ```cpp
@@ -90,7 +98,7 @@ The selected header exposes its backend type:
 using JIT = deep_jit::Runtime<deep_jit::CUDA>;
 ```
 
-For the Ascend header, use `deep_jit::Runtime<deep_jit::Ascend>` instead.
+For the ROCm or Ascend header, use `deep_jit::Runtime<deep_jit::ROCm>` or `deep_jit::Runtime<deep_jit::Ascend>` instead.
 
 `create_lazy_jit` delays construction of the runtime until its first use. This also delays device and compiler discovery:
 
@@ -376,6 +384,92 @@ CUDA toolkit and cache discovery also use these standard environment variables:
 If both CUDA root variables are unset or empty and `which nvcc` fails, DeepJIT tries `/usr/local/cuda`. A non-empty but invalid `CUDA_HOME` or `CUDA_PATH` is treated as an error rather than skipped.
 
 `JIT_NVCC_COMPILER` overrides the executable after CUDA-home discovery. A valid CUDA root must still be discoverable through `CUDA_HOME`, `CUDA_PATH`, `PATH`, or `/usr/local/cuda`. SASS dumping additionally requires an executable `cuobjdump` under that discovered toolkit root.
+
+## ROCm
+
+The ROCm backend is an independent, opt-in backend for AMD HIP. Select the device before first using a lazy runtime, and use that runtime and its loaded kernels on the same device.
+
+```cpp
+#include <deep_jit/backend/rocm/backend.hpp>
+
+using JIT = deep_jit::Runtime<deep_jit::ROCm>;
+inline auto jit = deep_jit::create_lazy_jit<deep_jit::ROCm>(
+    deep_jit::Config("/absolute/path/to/my_library", "MYLIB"));
+
+const std::string source = R"(
+#include <hip/hip_runtime.h>
+extern "C" __global__ void scale(float* output, const float* input, int count) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < count) output[i] = 2.0f * input[i];
+}
+)";
+const auto kernel = jit->compile("scale", source);
+jit->launch(kernel, {.grid_dim = dim3((count + 255) / 256), .block_dim = dim3(256)},
+            output, input, count);
+```
+
+Here `output` and `input` are HIP device pointers, and `count` is positive. Exactly one kernel must be present when loading. `compile_without_load()` remains build-only and does not require kernel enumeration or enforce that cardinality.
+
+### Development toolchain and PyTorch integration
+
+Use the ROCm 10 Core SDK development toolchain and a matching ROCm PyTorch installation. The host extension needs the DeepJIT, HIP, PyTorch, Python, and pybind11 include directories; define `__HIP_PLATFORM_AMD__` and link the HIP runtime plus the matching PyTorch HIP libraries. As for the other backends, the shared exception header also requires the elfutils development headers (for example, `libdw-dev`). Actual kernel compilation uses external HIPCC, not HIPRTC. Host-only C++ targets do not need `LANGUAGES HIP` or a CUDA toolkit.
+
+HIP headers must match the loaded `libamdhip64.so`. If `hipLibraryEnumerateKernels` or `hipKernelGetFunction` is undeclared, check whether `hipcc` selected older `/usr/include/hip` headers. Use the SDK development headers matching the runtime via `-isystem <sdk-devel-include>`; plain `-I` may not override that lookup. Lazy `dlsym` resolution still requires these declarations at compile time.
+
+The backend checks the required `hipLibrary*` enumeration and `hipKernelGetFunction` exports before loading a library and reports a compatibility error when an API is missing. A version string alone is not used as proof of API support; ROCm SDK and HIP component version numbers can differ. Validate the integration tests against the exact ROCm 10 installation being deployed.
+
+ROCm PyTorch uses `torch.cuda` for device selection, streams, and graphs; detect the HIP build with `torch.version.hip`. The existing `register_python_api<deep_jit::ROCm>()` and lazy initialization pattern work unchanged. An unset launch stream selects the current PyTorch HIP stream **at each launch**. An explicitly supplied `hipStream_t(nullptr)` remains the default HIP stream, rather than being replaced by the current PyTorch stream. Launches are asynchronous and do not add synchronization. Retain the kernel and argument allocations until queued execution finishes, and retain the kernel for the lifetime of a graph that uses it. Compile and load kernels before graph capture.
+
+### Compiler discovery and options
+
+Discovery first honors `<PREFIX>_JIT_HIPCC_COMPILER` (or `DJ_JIT_HIPCC_COMPILER`), even without a configured toolkit root. Otherwise it checks the first non-empty `ROCM_HOME`, `ROCM_PATH`, or `HIP_PATH`; then `hipcc` on `PATH`; then `/opt/rocm/core-10.0`, `/opt/rocm`, and `/opt/rocm/core`. A non-empty invalid explicit root or executable is an error. This supports ROCm 10 Core SDK paths, compatibility symlinks, and relocated installations. For tarballs, also configure the runtime library search path required by that installation.
+
+`deep_jit::rocm::CompilerOptions` uses the actual device `gcnArchName` (including target features) as `arch`, with `--offload-arch=<target>`, `-O3`, and `-std=c++20` by default. It supports `optimize_level`, `fast_math`, `compiler_verbose`, `with_line_info`, `check_no_spills`, `check_no_local_memory`, `dump_llvm_ir`, `dump_isa`, and `post_hook`. `hipcc_flags` replaces the raw flag list; `extra_hipcc_flags` appends individual arguments. Unset options inherit; explicit `false`, zero, and empty flag lists remain explicit overrides. Do not use raw flags to change the output format, output path, or single-target compilation mode.
+
+ROCm-specific suffixes follow the same `<PREFIX>_... > DJ_... > default` precedence:
+
+| Suffix | Default | Behavior |
+| --- | --- | --- |
+| `JIT_HIPCC_COMPILER` | Discovered `hipcc` | Selects the external AMD HIP compiler. |
+| `JIT_LLVM_READOBJ` | Discovered `llvm-readobj` | Decodes AMDGPU metadata for requested safety checks. |
+| `JIT_LLVM_OBJDUMP` | Discovered `llvm-objdump` | Disassembles the final code object for ISA dumps. |
+| `JIT_HIPCC_VERBOSE` | `0` | Adds `-v` and prints captured compiler output. |
+| `JIT_DUMP_LLVM_IR` | `0` | Compiles a target-native LLVM IR artifact. |
+| `JIT_DUMP_ISA` | `0` | Disassembles the final AMD code object. |
+
+LLVM tools are discovered alongside HIPCC and its resolved installation, in `bin`, `llvm/bin`, or `lib/llvm/bin`, then through `HIP_CLANG_PATH` and `PATH`. They are required only for the corresponding requested checks or dumps. Common `JIT_CACHE_DIR`, `JIT_CPP_STANDARD`, `JIT_PRINT_COMPILER_COMMAND`, `JIT_PRINT_LOAD_TIME`, and safety/line-info settings also apply. On ROCm, `JIT_DUMP_ASM` requests both LLVM IR and ISA; `JIT_DEBUG` additionally enables verbosity and line information. CUDA-only PTX/SASS/PTXAS settings do not select HIP equivalents.
+
+### Artifacts, cache keys, and diagnostics
+
+An entry contains `kernel.hip`, `kernel.hsaco`, `compiler.log`, `meta.json`, and the shared cache's `.committed` marker. Requested checks add `kernel.metadata`; dumps add `kernel.ll` and `kernel.isa`. Compiler failures include captured output. Missing or empty compiler output artifacts are rejected before publication. The optional Python `post_hook` receives the absolute HSACO path and runs in the temporary artifact directory before validation and publication; it must modify the code object in place. ISA and safety checks inspect the post-hook artifact; LLVM IR is a separate compilation of the source, not a reconstruction of the hook's output.
+
+The ROCm cache key includes a backend discriminator, HIPCC path and complete version output, effective target and individual flag arguments, safety/dump requests, the hook path and current file contents, and the shared source/include and dependency signatures. Enabling a check or dump therefore cannot silently reuse an unchecked entry. Compiler identity also snapshots `HIPCC_COMPILE_FLAGS_APPEND`, `HIPCC_LINK_FLAGS_APPEND`, `HIP_CLANG_PATH`, `HIP_DEVICE_LIB_PATH`, `HIP_PATH`, `ROCM_PATH`, `CPATH`, `CPLUS_INCLUDE_PATH`, and `C_INCLUDE_PATH`. Keep the toolchain and environment stable after runtime construction. Untracked SDK/header contents, hook imports, auxiliary tools, and other implicit inputs still require an appropriate `Config::extra_signature`.
+
+`check_no_spills` requires zero `.sgpr_spill_count` and `.vgpr_spill_count` for every kernel. `check_no_local_memory` separately requires zero `.private_segment_fixed_size` and no reported dynamic private stack. Private memory is not the same as a register spill, and neither is block shared memory (LDS). Missing, malformed, or ambiguous required metadata fails a requested check instead of being treated as zero. This uses LLVM's decoded metadata, not a custom binary parser.
+
+### Launch features and boundaries
+
+ROCm supports pointer/value arguments, `NoRefPtr` argument storage, zero-argument kernels, three-dimensional grids and blocks, current/explicit streams, dynamic shared memory, and cooperative launch on devices that support it. Launch validation checks kernel/device thread and shared-memory limits; cooperative grids must fit the occupancy-derived resident block capacity. Device properties expose the actual architecture, wave size, compute-unit count, cache, shared memory, and clock information without assuming CUDA compute capabilities or a fixed AMD wave size.
+
+This is portable DeepJIT workflow support, not equivalence to every vendor feature. CUDA tensor maps, thread-block clusters/distributed shared memory, programmatic dependent launch (PDL), PTX/SASS output, and PTXAS register controls are not implemented. Non-default cluster/PDL launch requests and recognized CUDA-only compiler switches are rejected, not silently emulated. Use HIP/LLVM flags and the ROCm dump names instead.
+
+### Tests
+
+Run the real SDK/device suite with:
+
+```bash
+python tests/test_rocm.py
+```
+
+It requires ROCm-enabled PyTorch and an AMD GPU. It tests compilation, loading, kernel cardinality, argument ABI, dynamic shared memory, streams, already-loaded graph capture, cooperative launch, lifetimes, diagnostics, hooks, failure cleanup, include/cache keys, lazy initialization, GIL release, and multi-process cache publication. The CUDA and Ascend test commands are unchanged and exclude ROCm-only headers.
+
+A separate host contract mode is available without ROCm:
+
+```bash
+python tests/test_rocm.py --host-only
+```
+
+This builds temporary HIP/stream test doubles and a fake external compiler to exercise host control flow and failure paths. It still needs the common C++/Python development dependencies. It does **not** validate the ROCm SDK ABI, real compiler output, GPU execution, real PyTorch stream integration, or hardware performance; passing it is not a substitute for the SDK/device suite.
 
 ## Ascend
 
