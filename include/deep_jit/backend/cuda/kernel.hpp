@@ -8,8 +8,10 @@
 #include <memory>
 #include <type_traits>
 
-#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/c/shim.h>
+#include <torch/headeronly/util/shim_utils.h>
 
 #include <deep_jit/backend/cuda/driver.hpp>
 #include <deep_jit/backend/cuda/options.hpp>
@@ -27,6 +29,15 @@ inline void* kernel_arg_pointer(const T& value) {
     } else {
         return const_cast<void*>(static_cast<const void*>(&value));
     }
+}
+
+// Utility to get the current CUDA stream for a given device using stable APIs.
+// Returns a CUstream for use with the CUDA Driver API.
+inline CUstream get_current_cuda_stream(const int32_t device_index) {
+    void* stream_ptr = nullptr;
+    TORCH_ERROR_CODE_CHECK(
+        aoti_torch_get_current_cuda_stream(device_index, &stream_ptr));
+    return static_cast<CUstream>(stream_ptr);
 }
 
 // Immutable CUDA kernel handles with shared ownership. Driver resources are
@@ -163,7 +174,7 @@ public:
         config.sharedMemBytes = *launch_options.num_smem_bytes;
         config.hStream = launch_options.stream
             ? *launch_options.stream
-            : at::cuda::getCurrentCUDAStream().stream();
+            : get_current_cuda_stream(torch::stable::accelerator::getCurrentDeviceIndex());
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLaunchKernelEx(

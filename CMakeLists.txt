@@ -17,5 +17,9 @@ include_directories(
 link_directories(${TORCH_INSTALL_PREFIX}/lib ${CUDA_TOOLKIT_ROOT_DIR}/lib64 ${CUDA_TOOLKIT_ROOT_DIR}/lib64/stubs)
 
 pybind11_add_module(_C csrc/python_api.cpp)
+target_compile_definitions(_C PRIVATE
+    TORCH_TARGET_VERSION=0x020a000000000000
+    USE_CUDA
+)
 target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES} torch_python)
 target_link_options(_C PRIVATE "-Wl,-Bsymbolic-functions")
