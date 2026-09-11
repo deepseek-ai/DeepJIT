@@ -31,6 +31,15 @@ inline void* kernel_arg_pointer(const T& value) {
     }
 }
 
+// Utility to get the current CUDA stream for a given device using stable APIs.
+// Returns a CUstream for use with the CUDA Driver API.
+inline CUstream get_current_cuda_stream(const int32_t device_index) {
+    void* stream_ptr = nullptr;
+    TORCH_ERROR_CODE_CHECK(
+        aoti_torch_get_current_cuda_stream(device_index, &stream_ptr));
+    return static_cast<CUstream>(stream_ptr);
+}
+
 // Immutable CUDA kernel handles with shared ownership. Driver resources are
 // unloaded when the last shared owner is destroyed.
 class Kernel {
@@ -163,14 +172,9 @@ public:
         config.blockDimY = launch_options.block_dim->y;
         config.blockDimZ = launch_options.block_dim->z;
         config.sharedMemBytes = *launch_options.num_smem_bytes;
-        void* current_stream = nullptr;
-        if (not launch_options.stream) {
-            const auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
-            TORCH_ERROR_CODE_CHECK(aoti_torch_get_current_cuda_stream(device_index, &current_stream));
-        }
         config.hStream = launch_options.stream
             ? *launch_options.stream
-            : static_cast<CUstream>(current_stream);
+            : get_current_cuda_stream(torch::stable::accelerator::getCurrentDeviceIndex());
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLaunchKernelEx(

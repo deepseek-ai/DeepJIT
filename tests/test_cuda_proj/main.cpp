@@ -53,21 +53,38 @@ int python_api_num_initializations = 0;
 std::shared_ptr<Runtime> process_test_runtime;
 std::shared_ptr<Runtime> gil_test_runtime;
 
+cudaStream_t get_stream_from_pool(const int32_t device_index) {
+    void* stream = nullptr;
+    TORCH_ERROR_CODE_CHECK(
+        torch_get_cuda_stream_from_pool(false, device_index, &stream));
+    return static_cast<cudaStream_t>(stream);
+}
+
 class TorchCUDAStreamGuard {
 public:
-    TorchCUDAStreamGuard(cudaStream_t stream, const int device_index)
-        : device_index(device_index) {
-        TORCH_ERROR_CODE_CHECK(aoti_torch_get_current_cuda_stream(device_index, &previous_stream));
-        TORCH_ERROR_CODE_CHECK(torch_set_current_cuda_stream(stream, device_index));
+    TorchCUDAStreamGuard() = delete;
+
+    explicit TorchCUDAStreamGuard(cudaStream_t stream, int32_t device_index) {
+        TORCH_ERROR_CODE_CHECK(
+            aoti_torch_create_cuda_stream_guard(
+                static_cast<void*>(stream), device_index, &guard_));
     }
 
     ~TorchCUDAStreamGuard() {
-        (void)torch_set_current_cuda_stream(previous_stream, device_index);
+        if (guard_)
+            (void)aoti_torch_delete_cuda_stream_guard(guard_);
     }
 
+    // Match c10::cuda::CUDAStreamGuard: copying is disallowed because the
+    // guard has unique ownership, and moving is disallowed because an RAII
+    // stream guard has no uninitialized state to leave behind.
+    TorchCUDAStreamGuard(const TorchCUDAStreamGuard&) = delete;
+    TorchCUDAStreamGuard& operator=(const TorchCUDAStreamGuard&) = delete;
+    TorchCUDAStreamGuard(TorchCUDAStreamGuard&&) = delete;
+    TorchCUDAStreamGuard& operator=(TorchCUDAStreamGuard&&) = delete;
+
 private:
-    int device_index;
-    void* previous_stream = nullptr;
+    CUDAStreamGuardHandle guard_ = nullptr;
 };
 
 const fs::path& get_test_cuda_project_dir() {
@@ -1837,8 +1854,7 @@ void test_runtime_launch_features(Runtime& runtime) {
 
         runtime.default_launch_options.stream = std::nullopt;
         runtime.default_launch_options.enable_pdl = false;
-        cudaStream_t current_stream = nullptr;
-        DJ_CUDA_RUNTIME_CHECK(cudaStreamCreate(&current_stream));
+        const auto current_stream = get_stream_from_pool(device_index);
 
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graph_exec = nullptr;
@@ -1885,7 +1901,6 @@ void test_runtime_launch_features(Runtime& runtime) {
         DJ_CUDA_RUNTIME_CHECK(cudaGraphExecDestroy(graph_exec));
         DJ_CUDA_RUNTIME_CHECK(cudaGraphDestroy(graph));
 
-        DJ_CUDA_RUNTIME_CHECK(cudaStreamDestroy(current_stream));
         DJ_CUDA_RUNTIME_CHECK(cudaStreamDestroy(stream));
         stream = nullptr;
         DJ_CUDA_RUNTIME_CHECK(cudaFree(output));
