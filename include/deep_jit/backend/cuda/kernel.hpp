@@ -8,8 +8,10 @@
 #include <memory>
 #include <type_traits>
 
-#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/c/shim.h>
+#include <torch/headeronly/util/shim_utils.h>
 
 #include <deep_jit/backend/cuda/driver.hpp>
 #include <deep_jit/backend/cuda/options.hpp>
@@ -161,9 +163,14 @@ public:
         config.blockDimY = launch_options.block_dim->y;
         config.blockDimZ = launch_options.block_dim->z;
         config.sharedMemBytes = *launch_options.num_smem_bytes;
+        void* current_stream = nullptr;
+        if (not launch_options.stream) {
+            const auto device_index = torch::stable::accelerator::getCurrentDeviceIndex();
+            TORCH_ERROR_CODE_CHECK(aoti_torch_get_current_cuda_stream(device_index, &current_stream));
+        }
         config.hStream = launch_options.stream
             ? *launch_options.stream
-            : at::cuda::getCurrentCUDAStream().stream();
+            : static_cast<CUstream>(current_stream);
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLaunchKernelEx(

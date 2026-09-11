@@ -27,7 +27,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | **CUDA** | NVCC compiles CUDA source to CUBIN; the CUDA Driver API loads and launches kernels. | CUDA headers 12.4+, NVCC 12.9+, and PyTorch with CUDA support. |
 | **Ascend** | Bisheng and ld.lld compile and link Ascend kernel source; ACL loads and launches kernels. | CANN with `bin/bisheng`, `bin/ld.lld`, and the Ascend `adv_api` headers; ACL and `torch_npu` headers and runtime. |
 
-The host environment must provide Linux, a C++20 compiler and standard library with `std::format` support, Python, pybind11, and the dependencies for the selected backend. DeepJIT is intended to be embedded into your extension as a header-only dependency.
+The host environment must provide Linux, a C++20 compiler and standard library with `std::format` support, Python, pybind11, and the dependencies for the selected backend. DeepJIT is intended to be embedded into your extension as a header-only dependency. CUDA consumers should compile with `TORCH_TARGET_VERSION=0x020a000000000000` and `USE_CUDA`; this targets PyTorch's stable ABI with PyTorch 2.10 as the minimum runtime version.
 
 See [Integration](#integration) for setup, [CUDA](#cuda) for GPU usage, and [Ascend](#ascend) for NPU usage.
 
