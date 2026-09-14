@@ -3373,6 +3373,12 @@ std::string compile_for_gil_test() {
     return gil_test_runtime->compile_without_load("gil_compile", get_template_source(81)).string();
 }
 
+std::uintptr_t compile_cached_for_gil_test() {
+    DJ_HOST_ASSERT(gil_test_runtime != nullptr, "GIL test runtime was not prepared");
+    return reinterpret_cast<std::uintptr_t>(
+        gil_test_runtime->compile("gil_single_flight", get_template_source(83)).get());
+}
+
 void init_python_api_jit(const std::string& library_root) {
     const auto root = fs::absolute(library_root).lexically_normal();
     python_api_jit = deep_jit::create_lazy_jit<deep_jit::CUDA>(deep_jit::Config(
@@ -3412,4 +3418,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("publish_disk_cache_entry", &publish_disk_cache_entry);
     module.def("prepare_gil_runtime", &prepare_gil_runtime);
     module.def("compile_for_gil_test", &compile_for_gil_test);
+    module.def("compile_cached_for_gil_test", &compile_cached_for_gil_test);
 }

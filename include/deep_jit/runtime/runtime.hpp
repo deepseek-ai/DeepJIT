@@ -56,6 +56,10 @@ public:
     std::shared_ptr<Kernel> compile(const std::string& name, const std::string& source, const CompilerOptions& override_options = {}) {
         const auto options = default_compiler_options.override_with(override_options);
         const auto key = cache_key(source, options);
+        // A waiter for the same key must not retain the Python GIL while the
+        // producer needs to reacquire it after compiling. Cover the complete
+        // single-flight operation; nested releases in the backend are no-ops.
+        GilScopedRelease gil_release;
         return mem_cache.get_or_create(key, [&] {
             return Backend::load(compile(name, source, key, options), env);
         });
