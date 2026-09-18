@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -884,6 +885,40 @@ void test_parser(const fs::path& cache_root) {
     deep_jit::write_file_sync(recovery_dir / "recovery/generated_header.cuh", "#pragma once\n");
     DJ_HOST_ASSERT(not recovery_parser.parse_into_hash(recovery_source).empty(),
                    "parser did not recover after a missing include was created");
+}
+
+void test_concurrent_parser(const fs::path& cache_root) {
+    constexpr int num_threads = 8;
+    const auto include_dir = cache_root / "concurrent_parser";
+    deep_jit::make_dirs(include_dir / "shared");
+    deep_jit::write_file_sync(include_dir / "shared/header.cuh", "#pragma once\n" + std::string(1 << 18, '\n'));
+    const std::string source = "#include <shared/header.cuh>\n";
+    deep_jit::Parser reference({include_dir}, {"shared/"});
+    const auto expected = reference.parse_into_hash(source);
+    deep_jit::Parser parser({include_dir}, {"shared/"});
+
+    std::barrier start(num_threads);
+    std::array<std::thread, num_threads> threads;
+    std::array<std::string, num_threads> hashes;
+    std::array<std::exception_ptr, num_threads> errors;
+    for (int i = 0; i < num_threads; ++i) {
+        threads[i] = std::thread([&, i] {
+            start.arrive_and_wait();
+            try {
+                hashes[i] = parser.parse_into_hash(source);
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
+        });
+    }
+    for (auto& thread : threads)
+        thread.join();
+    for (const auto& error : errors) {
+        if (error)
+            std::rethrow_exception(error);
+    }
+    for (const auto& hash : hashes)
+        DJ_HOST_ASSERT(hash == expected, "concurrent parser returned inconsistent hashes");
 }
 
 void test_generated_include_graph(const fs::path& cache_root) {
@@ -3272,6 +3307,7 @@ void run_tests(pybind11::module_ module) {
     run_test("hash robustness", test_hash_robustness);
     run_test("lazy init and kernel arguments", test_lazy_init_and_kernel_arguments);
     run_test("include parser", [&] { test_parser(cache_root); });
+    run_test("concurrent include parser", [&] { test_concurrent_parser(cache_root); });
     run_test("generated include graph", [&] { test_generated_include_graph(cache_root); });
     run_test("CUDA toolkit discovery", [&] { test_cuda_toolkit_discovery(cache_root); });
 
