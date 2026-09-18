@@ -1,11 +1,13 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <type_traits>
 
 #include <ATen/cuda/CUDAContext.h>
@@ -112,11 +114,15 @@ public:
         DJ_HOST_ASSERT(launch_options.cluster_dim->y == 1 and launch_options.cluster_dim->z == 1,
                        "only one-dimensional CUDA clusters are supported");
 
-        // Set **maximum** dynamic shared memory
-        if (*launch_options.num_smem_bytes > 0) {
-            DJ_CUDA_DRIVER_CHECK(driver::lazy_cuFuncSetAttribute(
-                kernel_handle, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                *launch_options.num_smem_bytes));
+        // The maximum is per function; keep our configured value monotonic across launches.
+        const int num_smem_bytes = *launch_options.num_smem_bytes;
+        if (num_smem_bytes > max_dynamic_smem_bytes_.load(std::memory_order_acquire)) {
+            std::lock_guard lock(max_dynamic_smem_bytes_mutex_);
+            if (num_smem_bytes > max_dynamic_smem_bytes_.load(std::memory_order_relaxed)) {
+                DJ_CUDA_DRIVER_CHECK(driver::lazy_cuFuncSetAttribute(
+                    kernel_handle, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, num_smem_bytes));
+                max_dynamic_smem_bytes_.store(num_smem_bytes, std::memory_order_release);
+            }
         }
 
         // Set non-portable cluster size
@@ -181,6 +187,10 @@ public:
         library_handle = nullptr;
         kernel_handle = nullptr;
     }
+
+private:
+    mutable std::atomic<int> max_dynamic_smem_bytes_{0};
+    mutable std::mutex max_dynamic_smem_bytes_mutex_;
 };
 
 }  // namespace deep_jit::cuda

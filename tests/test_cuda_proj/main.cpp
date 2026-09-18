@@ -2222,7 +2222,7 @@ void test_large_dynamic_shared_memory(Runtime& runtime) {
     const auto kernel = runtime.compile("large_dynamic_shared_memory", get_source("large_dynamic_shared_memory.cu"));
 
     int* output = nullptr;
-    DJ_CUDA_RUNTIME_CHECK(cudaMalloc(reinterpret_cast<void**>(&output), sizeof(int)));
+    DJ_CUDA_RUNTIME_CHECK(cudaMalloc(reinterpret_cast<void**>(&output), 2 * sizeof(int)));
     try {
         runtime.launch(
             kernel, {
@@ -2235,6 +2235,57 @@ void test_large_dynamic_shared_memory(Runtime& runtime) {
         int result = 0;
         DJ_CUDA_RUNTIME_CHECK(cudaMemcpy(&result, output, sizeof(int), cudaMemcpyDeviceToHost));
         DJ_HOST_ASSERT(result == 73, "large dynamic shared-memory launch returned {}", result);
+
+        runtime.launch(
+            kernel, {
+                .num_smem_bytes = sizeof(int),
+                .grid_dim = dim3(1, 1, 1),
+                .block_dim = dim3(32, 1, 1),
+            },
+            output, 19, 1);
+        DJ_CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
+        DJ_CUDA_RUNTIME_CHECK(cudaMemcpy(&result, output, sizeof(int), cudaMemcpyDeviceToHost));
+        DJ_HOST_ASSERT(result == 19, "small dynamic shared-memory launch returned {}", result);
+
+        int configured_max = 0;
+        DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuFuncGetAttribute(
+            &configured_max, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, kernel->kernel_handle));
+        DJ_HOST_ASSERT(configured_max >= num_smem_bytes,
+                       "smaller launch lowered the function's dynamic shared-memory maximum to {}", configured_max);
+
+        const auto stream = at::cuda::getCurrentCUDAStream().stream();
+        int device_index = 0;
+        DJ_CUDA_RUNTIME_CHECK(cudaGetDevice(&device_index));
+        std::array<std::exception_ptr, 2> errors{};
+        const auto launch_many = [&](const int index, const int shared_bytes) {
+            try {
+                DJ_CUDA_RUNTIME_CHECK(cudaSetDevice(device_index));
+                for (int iteration = 0; iteration < 32; ++iteration) {
+                    runtime.launch(
+                        kernel, {
+                            .stream = stream,
+                            .num_smem_bytes = shared_bytes,
+                            .grid_dim = dim3(1, 1, 1),
+                            .block_dim = dim3(32, 1, 1),
+                        },
+                        output + index, 100 + index, shared_bytes / static_cast<int>(sizeof(int)));
+                }
+            } catch (...) {
+                errors[index] = std::current_exception();
+            }
+        };
+        std::jthread small_thread(launch_many, 0, sizeof(int));
+        std::jthread large_thread(launch_many, 1, num_smem_bytes);
+        small_thread.join();
+        large_thread.join();
+        for (const auto& error : errors)
+            if (error)
+                std::rethrow_exception(error);
+        DJ_CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
+        std::array<int, 2> results{};
+        DJ_CUDA_RUNTIME_CHECK(cudaMemcpy(results.data(), output, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+        DJ_HOST_ASSERT(results[0] == 100 and results[1] == 101,
+                       "concurrent shared-memory launches returned {} and {}", results[0], results[1]);
         DJ_CUDA_RUNTIME_CHECK(cudaFree(output));
     } catch (...) {
         cudaFree(output);
@@ -2874,26 +2925,35 @@ void test_dump_and_launch_overhead(Runtime& runtime) {
         .grid_dim = dim3(1, 1, 1),
         .block_dim = dim3(1, 1, 1),
     };
-    constexpr int warmup_iterations = 100;
-    constexpr int num_rounds = 5;
-    constexpr int benchmark_iterations = 10000;
-    for (int i = 0; i < warmup_iterations; ++i)
-        runtime.launch(kernel, launch_options);
-    DJ_CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
-
-    std::array<double, num_rounds> samples{};
-    for (auto& sample : samples) {
-        const auto begin = std::chrono::steady_clock::now();
-        for (int i = 0; i < benchmark_iterations; ++i)
-            runtime.launch(kernel, launch_options);
-        const auto end = std::chrono::steady_clock::now();
+    const auto benchmark = [&](const std::array<LaunchOptions, 2>& options, const char* label) {
+        constexpr int warmup_iterations = 100;
+        constexpr int num_rounds = 5;
+        constexpr int benchmark_iterations = 10000;
+        for (int i = 0; i < warmup_iterations; ++i)
+            runtime.launch(kernel, options[i & 1]);
         DJ_CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
-        sample = std::chrono::duration<double, std::micro>(end - begin).count() / benchmark_iterations;
-    }
 
-    std::ranges::sort(samples);
-    std::printf("CUDA launch CPU overhead with GIL: median %.3f us, min %.3f us\n",
-                samples[num_rounds / 2], samples.front());
+        std::array<double, num_rounds> samples{};
+        for (auto& sample : samples) {
+            const auto begin = std::chrono::steady_clock::now();
+            for (int i = 0; i < benchmark_iterations; ++i)
+                runtime.launch(kernel, options[i & 1]);
+            const auto end = std::chrono::steady_clock::now();
+            DJ_CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
+            sample = std::chrono::duration<double, std::micro>(end - begin).count() / benchmark_iterations;
+        }
+
+        std::ranges::sort(samples);
+        std::printf("CUDA launch CPU overhead with GIL (%s): median %.3f us, min %.3f us\n",
+                    label, samples[num_rounds / 2], samples.front());
+    };
+    benchmark({launch_options, launch_options}, "0 B shared memory");
+    auto shared_memory_options = launch_options;
+    shared_memory_options.num_smem_bytes = 4096;
+    benchmark({shared_memory_options, shared_memory_options}, "4096 B shared memory");
+    auto large_shared_memory_options = launch_options;
+    large_shared_memory_options.num_smem_bytes = 65536;
+    benchmark({shared_memory_options, large_shared_memory_options}, "4096/65536 B alternating");
 }
 
 void test_dump_options_on_cache_hit(const fs::path& cache_root) {
