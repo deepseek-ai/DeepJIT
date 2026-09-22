@@ -23,6 +23,22 @@ DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipModuleLaunchKernel);
 DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipModuleLaunchCooperativeKernel);
 DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipModuleOccupancyMaxActiveBlocksPerMultiprocessor);
 
+// Supported VMM operations
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemAddressFree);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemAddressReserve);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemCreate);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemExportToShareableHandle);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemGetAccess);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemGetAllocationGranularity);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemGetAllocationPropertiesFromHandle);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemImportFromShareableHandle);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemMap);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemMapArrayAsync);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemRelease);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemRetainAllocationHandle);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemSetAccess);
+DJ_DECL_LAZY_DL_FUNCTION(get_hip_handle, hipMemUnmap);
+
 inline void require_library_api() {
     // Check before acquiring a library, including its cleanup entry point.
     static const bool available = [] {
