@@ -354,23 +354,23 @@ Only the library-prefixed and `DJ_` forms are read. An unprefixed variable such 
 
 Set JIT environment variables before the first runtime construction (normally before the first `get_jit()` or `jit->...`). Cache roots, compiler selection, C++ standard, and default compiler options are snapshotted then. Compiler-command printing and load-time diagnostics are read again when compile/load runs; changing variables after initialization can therefore produce a mixed configuration and is unsupported.
 
-| Suffix | Default | Behavior |
-| --- | --- | --- |
-| `JIT_CACHE_DIR` | `$HOME/.dj` | Cache root, or a colon-separated list. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
-| `JIT_DEBUG` | `0` | Enables compiler-command and load diagnostics. CUDA also enables PTXAS output, line info, and PTX/SASS dumps. |
+| Suffix | Default                         | Behavior |
+| --- |---------------------------------| --- |
+| `JIT_CACHE_DIR` | `$HOME/.dj`                     | Cache root, or a colon-separated list. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
+| `JIT_DEBUG` | `0`                             | Enables compiler-command and load diagnostics. CUDA also enables PTXAS output, line info, and PTX/SASS dumps. |
 | `JIT_NVCC_COMPILER` | `<discovered-toolkit>/bin/nvcc` | Overrides the NVCC executable. |
-| `JIT_CPP_STANDARD` | `20` | Selects the C++ standard passed to NVCC as `-std=c++<value>`. |
-| `JIT_KERNEL_DEBUG_INFO` | `0` | Adds Bisheng kernel debug information. |
-| `JIT_LAUNCH_TIMEOUT` | `10` | Sets the Ascend kernel launch timeout in seconds; `0` disables it. |
-| `JIT_PRINT_COMPILER_COMMAND` | `0` | Prints compiler and disassembler commands. |
-| `JIT_PTXAS_VERBOSE` | `0` | Adds verbose PTXAS output and prints it after compilation. |
-| `JIT_CHECK_NO_SPILLS` | `0` | Adds `--warn-on-spills` and rejects register spills. |
-| `JIT_CHECK_NO_LOCAL_MEMORY` | `0` | Adds `--warn-on-local-memory-usage` and rejects any local-memory usage. |
-| `JIT_PRINT_LOAD_TIME` | `0` | Prints kernel-binary loading time. |
-| `JIT_WITH_LINEINFO` | `0` | Adds CUDA source line information. |
-| `JIT_DUMP_ASM` | `0` | Generates CUDA PTX/SASS or Ascend assembly artifacts on a cache miss. |
-| `JIT_DUMP_PTX` | `0` | Generates a PTX artifact on a cache miss. |
-| `JIT_DUMP_SASS` | `0` | Generates a SASS artifact on a cache miss. |
+| `JIT_CPP_STANDARD` | `20`                            | Selects the C++ standard passed to NVCC as `-std=c++<value>`. |
+| `JIT_KERNEL_DEBUG_INFO` | `0`                             | Adds Bisheng kernel debug information. |
+| `JIT_LAUNCH_TIMEOUT` | `300`                           | Sets the Ascend kernel launch timeout in seconds; `0` disables it. |
+| `JIT_PRINT_COMPILER_COMMAND` | `0`                             | Prints compiler and disassembler commands. |
+| `JIT_PTXAS_VERBOSE` | `0`                             | Adds verbose PTXAS output and prints it after compilation. |
+| `JIT_CHECK_NO_SPILLS` | `0`                             | Adds `--warn-on-spills` and rejects register spills. |
+| `JIT_CHECK_NO_LOCAL_MEMORY` | `0`                             | Adds `--warn-on-local-memory-usage` and rejects any local-memory usage. |
+| `JIT_PRINT_LOAD_TIME` | `0`                             | Prints kernel-binary loading time. |
+| `JIT_WITH_LINEINFO` | `0`                             | Adds CUDA source line information. |
+| `JIT_DUMP_ASM` | `0`                             | Generates CUDA PTX/SASS or Ascend assembly artifacts on a cache miss. |
+| `JIT_DUMP_PTX` | `0`                             | Generates a PTX artifact on a cache miss. |
+| `JIT_DUMP_SASS` | `0`                             | Generates a SASS artifact on a cache miss. |
 
 CUDA toolkit and cache discovery also use these standard environment variables:
 
