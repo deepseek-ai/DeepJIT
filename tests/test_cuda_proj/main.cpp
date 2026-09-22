@@ -1680,6 +1680,64 @@ void test_device(Runtime& runtime) {
     }
 }
 
+cudaStreamCaptureMode get_thread_capture_mode() {
+    auto mode = cudaStreamCaptureModeRelaxed;
+    DJ_CUDA_RUNTIME_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
+    const auto current_mode = mode;
+    DJ_CUDA_RUNTIME_CHECK(cudaThreadExchangeStreamCaptureMode(&mode));
+    return current_mode;
+}
+
+// Runs `function` while a side stream is being captured in `mode`, and checks that the capture stays valid
+template <typename Function>
+void run_during_graph_capture(const cudaStreamCaptureMode mode, Function&& function) {
+    cudaStream_t stream = nullptr;
+    DJ_CUDA_RUNTIME_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(stream, mode));
+    const auto thread_mode = get_thread_capture_mode();
+    std::exception_ptr exception;
+    try {
+        function();
+        DJ_HOST_ASSERT(get_thread_capture_mode() == thread_mode, "thread stream-capture mode was not restored");
+    } catch (...) {
+        exception = std::current_exception();
+    }
+    cudaGraph_t graph = nullptr;
+    const auto end_status = cudaStreamEndCapture(stream, &graph);
+    // Clear the non-sticky capture error (if any) so that later tests are unaffected
+    static_cast<void>(cudaGetLastError());
+    if (graph != nullptr)
+        DJ_CUDA_RUNTIME_CHECK(cudaGraphDestroy(graph));
+    DJ_CUDA_RUNTIME_CHECK(cudaStreamDestroy(stream));
+    if (exception)
+        std::rethrow_exception(exception);
+    DJ_HOST_ASSERT(end_status == cudaSuccess, "CUDA graph capture was invalidated: {}", cudaGetErrorName(end_status));
+}
+
+void test_device_during_graph_capture(const fs::path& cache_root) {
+    // The first device query of a library may happen inside a capture, e.g., the first call under `torch.cuda.graph`
+    for (const auto mode: {cudaStreamCaptureModeGlobal, cudaStreamCaptureModeThreadLocal, cudaStreamCaptureModeRelaxed}) {
+        run_during_graph_capture(mode, [] {
+            deep_jit::cuda::Device device;
+            DJ_HOST_ASSERT(device.get_num_sms() > 0, "CUDA device has no SMs");
+            DJ_HOST_ASSERT(device.get_clock_rate() > 0, "CUDA device clock rate is invalid");
+        });
+    }
+
+    // The same for the first use of a lazily created runtime
+    set_env("CAPTURE_RUNTIME_JIT_CACHE_DIR", (cache_root / "capture_runtime").string());
+    auto lazy = deep_jit::create_lazy_jit<deep_jit::CUDA>(deep_jit::Config(
+        get_test_cuda_project_dir(),
+        "CAPTURE_RUNTIME",
+        "capture-runtime",
+        {get_test_cuda_project_dir() / "include_original"},
+        {"test_cuda/"}));
+    run_during_graph_capture(cudaStreamCaptureModeGlobal, [&] {
+        DJ_HOST_ASSERT(lazy.get()->device.get_num_sms() > 0, "lazy runtime has no CUDA device");
+    });
+    unset_env("CAPTURE_RUNTIME_JIT_CACHE_DIR");
+}
+
 void test_tma_driver_wrapper(Runtime& runtime) {
     void* tensor_data = nullptr;
     unsigned int* output = nullptr;
@@ -3280,6 +3338,7 @@ void run_tests(pybind11::module_ module) {
     DJ_HOST_ASSERT(runtime->disk_cache.paths.front() == cache_root,
                    "library-prefixed cache directory was not selected");
     run_test("CUDA device", [&] { test_device(*runtime); });
+    run_test("CUDA device during graph capture", [&] { test_device_during_graph_capture(cache_root); });
     run_test("TMA driver wrapper and kernel argument", [&] { test_tma_driver_wrapper(*runtime); });
     run_test("compiler options", [&] { test_options(*runtime); });
     run_test("runtime launch features", [&] { test_runtime_launch_features(*runtime); });
