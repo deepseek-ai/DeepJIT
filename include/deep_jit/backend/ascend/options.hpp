@@ -38,6 +38,7 @@ struct CompilerOptions {
             .bisheng_flags = std::vector<std::string> {
                 "--cce-aicore-only",
                 "-mllvm", "-enable-hiipu-vf-loop-unroll",
+                "-mllvm", "-cce-aicore-dcpreload-args=false",
             },
             .linker_flags = std::vector<std::string> {
                 "-m", "aicorelinux",

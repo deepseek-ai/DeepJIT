@@ -340,6 +340,16 @@ void test_options(Runtime& runtime) {
     DJ_HOST_ASSERT(defaults.arch == runtime.device.get_npu_arch());
     DJ_HOST_ASSERT(defaults.bisheng_flags.has_value());
     DJ_HOST_ASSERT(defaults.linker_flags.has_value());
+    const auto default_flags = defaults.get_bisheng_flags();
+    const auto no_preload = std::ranges::find(default_flags, "-cce-aicore-dcpreload-args=false");
+    DJ_HOST_ASSERT(no_preload != default_flags.end() and no_preload != default_flags.begin());
+    DJ_HOST_ASSERT(*(no_preload - 1) == "-mllvm");
+    const auto with_preload = defaults.override_with(CompilerOptions {
+        .extra_bisheng_flags = {"-mllvm", "-cce-aicore-dcpreload-args=true"},
+    });
+    DJ_HOST_ASSERT(runtime.cache_key(get_increment_source(1), defaults) !=
+                       runtime.cache_key(get_increment_source(1), with_preload),
+                   "parameter preload options must affect the cache key");
 
     const auto overridden = defaults.override_with(CompilerOptions {
         .optimize_level = "3",
@@ -394,6 +404,7 @@ void test_artifact_and_metadata(Runtime& runtime) {
     DJ_HOST_ASSERT(metadata.find("\"compiler_info\":") != std::string::npos);
     DJ_HOST_ASSERT(metadata.find("\"compiler_options\":") != std::string::npos);
     DJ_HOST_ASSERT(metadata.find("-fcce-simt-lambda") != std::string::npos);
+    DJ_HOST_ASSERT(metadata.find("-cce-aicore-dcpreload-args=false") != std::string::npos);
 }
 
 void test_increment_and_cache(Runtime& runtime) {
