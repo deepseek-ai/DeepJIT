@@ -53,14 +53,17 @@ public:
         return handle;                                                                        \
     }
 
+#define DJ_STRINGIFY(name) #name
+
 #define DJ_DECL_LAZY_DL_FUNCTION(handle_func_name, name)                                                                   \
     template <typename... Args>                                                                                            \
     static auto lazy_##name(Args&&... args) {                                                                              \
         static const auto func = []() {                                                                                    \
-            void* symbol = ::dlsym(handle_func_name(), #name);                                                             \
+            void* symbol = ::dlsym(handle_func_name(), DJ_STRINGIFY(name));                                                \
             if (symbol == nullptr) {                                                                                       \
                 const char* error = ::dlerror();                                                                           \
-                DJ_PANIC("failed to load {} from {}: {}", #name, #handle_func_name, error == nullptr ? "unknown" : error); \
+                DJ_PANIC("failed to load {} from {}: {}", DJ_STRINGIFY(name),                                              \
+                         #handle_func_name, error == nullptr ? "unknown" : error);                                         \
             }                                                                                                              \
             return reinterpret_cast<decltype(&name)>(symbol);                                                              \
         }();                                                                                                               \
