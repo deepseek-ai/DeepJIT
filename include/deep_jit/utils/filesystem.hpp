@@ -87,11 +87,13 @@ inline void write_file_sync(const std::filesystem::path& path, const std::string
 // same parent directory.
 inline void safe_remove_all(const std::filesystem::path& path) {
     std::error_code error_code;
-    if (not std::filesystem::exists(path, error_code) or error_code)
+    const auto status = std::filesystem::symlink_status(path, error_code);
+    if (error_code or not std::filesystem::exists(status))
         return;
 
-    // A single file
-    if (not std::filesystem::is_directory(path, error_code) or error_code) {
+    // Inspect the entry itself: unlink symlinks, including dangling ones,
+    // without traversing a directory outside this tree.
+    if (not std::filesystem::is_directory(status)) {
         std::filesystem::remove(path, error_code);
         return;
     }

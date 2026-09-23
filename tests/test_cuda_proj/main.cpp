@@ -2988,6 +2988,22 @@ void test_compiler_failure_cleanup(Runtime& runtime, const fs::path& cache_root)
     check_tmp_is_empty(cache_root);
 }
 
+void test_symlink_failure_cleanup(Runtime& runtime, const fs::path& cache_root) {
+    const auto outside = cache_root / "symlink_cleanup_outside";
+    deep_jit::make_dirs(outside);
+    const auto sentinel = outside / "sentinel";
+    deep_jit::write_file_sync(sentinel, "preserve outside contents");
+    set_env("DEEP_JIT_TEST_CLEANUP_OUTSIDE", outside.string());
+    const CompilerOptions options {.post_hook = "scripts/symlink_failing_post_hook.py"};
+    expect_failure(
+        [&] { runtime.compile_without_load("symlink_failure", get_template_source(96), options); },
+        "command failed with exit code 7");
+    unset_env("DEEP_JIT_TEST_CLEANUP_OUTSIDE");
+    DJ_HOST_ASSERT(fs::is_regular_file(sentinel), "failed hook cleanup deleted an outside file");
+    DJ_HOST_ASSERT(deep_jit::read(sentinel) == "preserve outside contents");
+    check_tmp_is_empty(cache_root);
+}
+
 void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root) {
     const auto include_dir = get_test_cuda_project_dir() / "include_original";
     const auto source = get_template_source(94);
@@ -3314,6 +3330,7 @@ void run_tests(pybind11::module_ module) {
     run_test("kernel count", [&] { test_kernel_count(*runtime); });
     run_test("PTXAS checks", [&] { test_ptxas_checks(cache_root); });
     run_test("compiler failure cleanup", [&] { test_compiler_failure_cleanup(*runtime, cache_root); });
+    run_test("symlink failure cleanup", [&] { test_symlink_failure_cleanup(*runtime, cache_root); });
     run_test("backend output validation", [&] { test_backend_output_validation(*runtime, cache_root); });
     run_test("dump artifacts and launch overhead", [&] { test_dump_and_launch_overhead(*runtime); });
     run_test("dump options on cache hit", [&] { test_dump_options_on_cache_hit(cache_root); });
