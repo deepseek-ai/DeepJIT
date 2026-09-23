@@ -98,11 +98,9 @@ std::shared_ptr<Runtime> make_runtime(const fs::path& include_dir,
     std::vector include_dirs = {include_dir, get_test_project_dir()};
     if (not third_party_dir.empty())
         include_dirs.emplace_back(third_party_dir);
-    auto runtime = std::make_shared<Runtime>(deep_jit::Config(
+    return std::make_shared<Runtime>(deep_jit::Config(
         get_test_project_dir(), env_prefix, extra_signature,
         include_dirs, {"test_ascend/", "kernels/"}));
-    runtime->default_compiler_options.bisheng_flags->emplace_back("-fcce-simt-lambda");
-    return runtime;
 }
 
 void check_artifact(const fs::path& artifact_dir, const std::string& source) {
@@ -403,7 +401,7 @@ void test_artifact_and_metadata(Runtime& runtime) {
     DJ_HOST_ASSERT(metadata.find("\"command\":") != std::string::npos);
     DJ_HOST_ASSERT(metadata.find("\"compiler_info\":") != std::string::npos);
     DJ_HOST_ASSERT(metadata.find("\"compiler_options\":") != std::string::npos);
-    DJ_HOST_ASSERT(metadata.find("-fcce-simt-lambda") != std::string::npos);
+    DJ_HOST_ASSERT(metadata.find("-fcce-simt-lambda") == std::string::npos);
     DJ_HOST_ASSERT(metadata.find("-cce-aicore-dcpreload-args=false") != std::string::npos);
 }
 
@@ -569,12 +567,10 @@ void test_relocated_wheel_include_dir(const fs::path& cache_root) {
 
     const auto source = "#include <deep_jit/wheel_marker.hpp>\n" + get_increment_source(73);
     const auto make_environment_runtime = [&](const fs::path& include_dir) {
-        auto runtime = std::make_shared<Runtime>(deep_jit::Config(
+        return std::make_shared<Runtime>(deep_jit::Config(
             root, "WHEEL_INCLUDE", "ascend-test-signature",
             std::vector<fs::path>{include_dir, root},
             std::vector<std::string>{"deep_jit/", "kernels/"}));
-        runtime->default_compiler_options.bisheng_flags->emplace_back("-fcce-simt-lambda");
-        return runtime;
     };
 
     set_env("WHEEL_INCLUDE_JIT_CACHE_DIR", wheel_cache.string());
