@@ -76,7 +76,7 @@ public:
                  const Config& config,
                  const CompilerOptions& options) const {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Paths
         dir = std::filesystem::absolute(dir).lexically_normal();

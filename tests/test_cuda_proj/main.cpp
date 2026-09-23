@@ -22,8 +22,9 @@
 #include <vector>
 
 #include <cuda_runtime.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <pybind11/pybind11.h>
+#include <torch/csrc/stable/c/shim.h>
+#include <torch/headeronly/util/shim_utils.h>
 #include <unistd.h>
 
 #include <deep_jit/backend/cuda/backend.hpp>
@@ -51,6 +52,40 @@ deep_jit::LazyInit<Runtime> python_api_jit(nullptr);
 int python_api_num_initializations = 0;
 std::shared_ptr<Runtime> process_test_runtime;
 std::shared_ptr<Runtime> gil_test_runtime;
+
+cudaStream_t get_stream_from_pool(const int32_t device_index) {
+    void* stream = nullptr;
+    TORCH_ERROR_CODE_CHECK(
+        torch_get_cuda_stream_from_pool(false, device_index, &stream));
+    return static_cast<cudaStream_t>(stream);
+}
+
+class TorchCUDAStreamGuard {
+public:
+    TorchCUDAStreamGuard() = delete;
+
+    explicit TorchCUDAStreamGuard(cudaStream_t stream, int32_t device_index) {
+        TORCH_ERROR_CODE_CHECK(
+            aoti_torch_create_cuda_stream_guard(
+                static_cast<void*>(stream), device_index, &guard_));
+    }
+
+    ~TorchCUDAStreamGuard() {
+        if (guard_)
+            (void)aoti_torch_delete_cuda_stream_guard(guard_);
+    }
+
+    // Match c10::cuda::CUDAStreamGuard: copying is disallowed because the
+    // guard has unique ownership, and moving is disallowed because an RAII
+    // stream guard has no uninitialized state to leave behind.
+    TorchCUDAStreamGuard(const TorchCUDAStreamGuard&) = delete;
+    TorchCUDAStreamGuard& operator=(const TorchCUDAStreamGuard&) = delete;
+    TorchCUDAStreamGuard(TorchCUDAStreamGuard&&) = delete;
+    TorchCUDAStreamGuard& operator=(TorchCUDAStreamGuard&&) = delete;
+
+private:
+    CUDAStreamGuardHandle guard_ = nullptr;
+};
 
 const fs::path& get_test_cuda_project_dir() {
     static const fs::path path = [] {
@@ -1819,13 +1854,13 @@ void test_runtime_launch_features(Runtime& runtime) {
 
         runtime.default_launch_options.stream = std::nullopt;
         runtime.default_launch_options.enable_pdl = false;
-        const auto current_stream = c10::cuda::getStreamFromPool();
+        const auto current_stream = get_stream_from_pool(device_index);
 
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graph_exec = nullptr;
         {
-            const c10::cuda::CUDAStreamGuard stream_guard(current_stream);
-            DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(current_stream.stream(), cudaStreamCaptureModeGlobal));
+            const TorchCUDAStreamGuard stream_guard(current_stream, device_index);
+            DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(current_stream, cudaStreamCaptureModeGlobal));
             runtime.launch(
                 kernel, {
                     .num_smem_bytes = sizeof(int),
@@ -1833,12 +1868,12 @@ void test_runtime_launch_features(Runtime& runtime) {
                     .block_dim = dim3(32, 1, 1),
                 },
                 output, argument_storage, 10);
-            DJ_CUDA_RUNTIME_CHECK(cudaStreamEndCapture(current_stream.stream(), &graph));
+            DJ_CUDA_RUNTIME_CHECK(cudaStreamEndCapture(current_stream, &graph));
         }
         check_graph(graph);
         DJ_CUDA_RUNTIME_CHECK(cudaGraphInstantiate(&graph_exec, graph, nullptr, nullptr, 0));
-        DJ_CUDA_RUNTIME_CHECK(cudaGraphLaunch(graph_exec, current_stream.stream()));
-        DJ_CUDA_RUNTIME_CHECK(cudaStreamSynchronize(current_stream.stream()));
+        DJ_CUDA_RUNTIME_CHECK(cudaGraphLaunch(graph_exec, current_stream));
+        DJ_CUDA_RUNTIME_CHECK(cudaStreamSynchronize(current_stream));
         check_output(43, 44);
         DJ_CUDA_RUNTIME_CHECK(cudaGraphExecDestroy(graph_exec));
         DJ_CUDA_RUNTIME_CHECK(cudaGraphDestroy(graph));
@@ -1846,7 +1881,7 @@ void test_runtime_launch_features(Runtime& runtime) {
         graph = nullptr;
         graph_exec = nullptr;
         {
-            const c10::cuda::CUDAStreamGuard stream_guard(current_stream);
+            const TorchCUDAStreamGuard stream_guard(current_stream, device_index);
             DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
             runtime.launch(
                 kernel, {

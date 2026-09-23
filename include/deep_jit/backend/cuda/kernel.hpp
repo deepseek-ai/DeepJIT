@@ -8,8 +8,10 @@
 #include <memory>
 #include <type_traits>
 
-#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/c/shim.h>
+#include <torch/headeronly/util/shim_utils.h>
 
 #include <deep_jit/backend/cuda/driver.hpp>
 #include <deep_jit/backend/cuda/options.hpp>
@@ -27,6 +29,13 @@ inline void* kernel_arg_pointer(const T& value) {
     } else {
         return const_cast<void*>(static_cast<const void*>(&value));
     }
+}
+
+// Utility to get the current CUDA stream for a given device using stable APIs.
+// Returns a CUstream for use with the CUDA Driver API.
+inline CUstream get_current_cuda_stream(const int32_t device_index) {
+    auto stream = torch::stable::accelerator::getCurrentStream(device_index);
+    return static_cast<CUstream>(stream.nativeHandle());
 }
 
 // Immutable CUDA kernel handles with shared ownership. Driver resources are
@@ -47,7 +56,7 @@ public:
 
     static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Check existence
         const auto cubin_path = dir / "kernel.cubin";
@@ -91,7 +100,7 @@ public:
     template <typename... Args>
     void launch(const LaunchOptions& launch_options, const Args&... args) const {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Checks
         DJ_HOST_ASSERT(kernel_handle != nullptr, "kernel must be loaded before launch");
@@ -163,7 +172,7 @@ public:
         config.sharedMemBytes = *launch_options.num_smem_bytes;
         config.hStream = launch_options.stream
             ? *launch_options.stream
-            : at::cuda::getCurrentCUDAStream().stream();
+            : get_current_cuda_stream(torch::stable::accelerator::getCurrentDeviceIndex());
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLaunchKernelEx(

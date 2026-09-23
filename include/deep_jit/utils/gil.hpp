@@ -1,7 +1,11 @@
 #pragma once
 
-#include <optional>
+#ifndef DJ_DISABLE_GIL
+#define DJ_DISABLE_GIL 0
+#endif
 
+#if !DJ_DISABLE_GIL
+#include <optional>
 #include <pybind11/pybind11.h>
 
 namespace deep_jit {
@@ -22,3 +26,21 @@ public:
 };
 
 }  // namespace deep_jit
+
+#else
+
+namespace deep_jit {
+
+class GilScopedRelease {
+public:
+    GilScopedRelease() = default;
+
+    GilScopedRelease(const GilScopedRelease&) = delete;
+    GilScopedRelease& operator=(const GilScopedRelease&) = delete;
+    GilScopedRelease(GilScopedRelease&&) = delete;
+    GilScopedRelease& operator=(GilScopedRelease&&) = delete;
+};
+
+}  // namespace deep_jit
+
+#endif
