@@ -283,6 +283,80 @@ def validate_compile_releases_gil(module, temporary_dir):
     print(f'validated compile-time GIL release ({progress[0]} observer iterations)', flush=True)
 
 
+def validate_concurrent_compile_single_flight(module_path, temporary_dir):
+    cache_root = temporary_dir / 'gil_single_flight_cache'
+    compiler_barrier_dir = temporary_dir / 'gil_single_flight_compiler_barrier'
+    compiler_barrier_dir.mkdir()
+    code = '''
+import importlib.util
+import sys
+import threading
+
+import torch
+
+spec = importlib.util.spec_from_file_location('deep_jit_cuda_test', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.prepare_gil_runtime()
+
+start = threading.Barrier(3)
+kernel_addresses = []
+errors = []
+
+def compile_same_key():
+    try:
+        torch.cuda.set_device(0)
+        start.wait()
+        kernel_addresses.append(module.compile_cached_for_gil_test())
+    except BaseException as exception:
+        errors.append(repr(exception))
+
+threads = [threading.Thread(target=compile_same_key) for _ in range(2)]
+for thread in threads:
+    thread.start()
+start.wait()
+for thread in threads:
+    thread.join()
+
+assert not errors, errors
+assert len(kernel_addresses) == 2, kernel_addresses
+assert len(set(kernel_addresses)) == 1, kernel_addresses
+print(f'KERNEL_ADDRESS={kernel_addresses[0]}')
+'''
+    env = os.environ.copy()
+    env.update({
+        'GIL_TEST_JIT_CACHE_DIR': str(cache_root),
+        'GIL_TEST_JIT_NVCC_COMPILER': str(TEST_CUDA_PROJECT / 'scripts' / 'nvcc_barrier.py'),
+        'DEEP_JIT_TEST_REAL_NVCC': str(Path(CUDA_HOME) / 'bin' / 'nvcc'),
+        'DEEP_JIT_TEST_NVCC_BARRIER_DIR': str(compiler_barrier_dir),
+        'DEEP_JIT_TEST_NVCC_BARRIER_SIZE': '1',
+        'DEEP_JIT_TEST_NVCC_DELAY_SECONDS': '1',
+    })
+    process = register_process_group(subprocess.Popen(
+        [sys.executable, '-c', code, str(module_path)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    ))
+    try:
+        try:
+            output, _ = process.communicate(timeout=120)
+        except subprocess.TimeoutExpired as exception:
+            raise AssertionError('same-key compile deadlocked while waiting for the GIL') from exception
+        assert process.returncode == 0, output
+        address_lines = [line for line in output.splitlines() if line.startswith('KERNEL_ADDRESS=')]
+        assert len(address_lines) == 1, output
+        assert int(address_lines[0].removeprefix('KERNEL_ADDRESS=')) != 0, output
+    finally:
+        terminate_process_group(process)
+
+    compiler_invocations = list(compiler_barrier_dir.iterdir())
+    assert len(compiler_invocations) == 1, compiler_invocations
+    print('validated same-key compile single-flight without GIL deadlock', flush=True)
+
+
 def validate_diagnostic_output(module_path, temporary_dir):
     code = '''
 import importlib.util
@@ -811,6 +885,7 @@ def run_worker():
             raise AssertionError('invalid CUDA source unexpectedly compiled')
         assert module.run_registered_jit(33) == 34
         validate_compile_releases_gil(module, temporary_dir)
+        validate_concurrent_compile_single_flight(module.__file__, temporary_dir)
         validate_direct_disk_cache_publication(module.__file__, temporary_dir)
         validate_crashed_disk_cache_writer(module.__file__, temporary_dir)
         module.run_tests(module)
