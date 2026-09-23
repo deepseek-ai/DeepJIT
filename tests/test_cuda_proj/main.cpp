@@ -2977,6 +2977,39 @@ void test_ptxas_checks(const fs::path& cache_root) {
     unset_env("PTXAS_CHECK_JIT_NVCC_COMPILER");
 }
 
+void test_cache_publication_failure(const fs::path& cache_root) {
+    const auto publication_cache = cache_root / "publication_failure";
+    set_env("PUBLICATION_FAILURE_JIT_CACHE_DIR", publication_cache.string());
+    const auto runtime = make_runtime_with_prefix(
+        "PUBLICATION_FAILURE", get_test_cuda_project_dir() / "include_original");
+    unset_env("PUBLICATION_FAILURE_JIT_CACHE_DIR");
+    const auto source = get_template_source(73);
+    const auto artifact = publication_cache / "cache" /
+        std::format("publication_failure.{}", runtime->cache_key(source, runtime->default_compiler_options));
+    deep_jit::make_dirs(artifact);
+    deep_jit::write_file_sync(artifact / "partial", "incomplete");
+    bool failed = false;
+    try {
+        runtime->compile_without_load("publication_failure", source);
+    } catch (const fs::filesystem_error& error) {
+        failed = true;
+        DJ_HOST_ASSERT(error.code() == std::errc::directory_not_empty or error.code() == std::errc::file_exists);
+        DJ_HOST_ASSERT(error.path2() == artifact);
+    }
+    DJ_HOST_ASSERT(failed, "compilation reported success for an incomplete destination");
+    DJ_HOST_ASSERT(deep_jit::read(artifact / "partial") == "incomplete");
+    DJ_HOST_ASSERT(not fs::exists(artifact / deep_jit::kCommitFileName));
+    check_tmp_is_empty(publication_cache);
+
+    // Only the test owner removes its incomplete fixture before retrying.
+    DJ_HOST_ASSERT(fs::remove(artifact / "partial"));
+    DJ_HOST_ASSERT(fs::remove(artifact));
+    const auto kernel = runtime->compile("publication_failure", source);
+    DJ_HOST_ASSERT(launch_value(*runtime, kernel, 1) == 74);
+    DJ_HOST_ASSERT(fs::exists(artifact / deep_jit::kCommitFileName));
+    check_tmp_is_empty(publication_cache);
+}
+
 void test_compiler_failure_cleanup(Runtime& runtime, const fs::path& cache_root) {
     const std::string source = "extern \"C\" __global__ void invalid_cuda_source( {\n";
     const auto artifact = runtime.disk_cache.paths.front() / "cache" /
@@ -3314,6 +3347,7 @@ void run_tests(pybind11::module_ module) {
     run_test("kernel count", [&] { test_kernel_count(*runtime); });
     run_test("PTXAS checks", [&] { test_ptxas_checks(cache_root); });
     run_test("compiler failure cleanup", [&] { test_compiler_failure_cleanup(*runtime, cache_root); });
+    run_test("cache publication failure", [&] { test_cache_publication_failure(cache_root); });
     run_test("backend output validation", [&] { test_backend_output_validation(*runtime, cache_root); });
     run_test("dump artifacts and launch overhead", [&] { test_dump_and_launch_overhead(*runtime); });
     run_test("dump options on cache hit", [&] { test_dump_options_on_cache_hit(cache_root); });
