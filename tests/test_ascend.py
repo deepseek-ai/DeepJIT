@@ -64,7 +64,7 @@ def validate_header_self_containment(temporary_dir, include_paths):
     headers = sorted(
         path.relative_to(include_root)
         for path in (include_root / 'deep_jit').rglob('*.hpp')
-        if 'backend/cuda/' not in path.as_posix()
+        if 'backend/cuda/' not in path.as_posix() and 'backend/rocm/' not in path.as_posix()
     )
     source_path = temporary_dir / 'header_self_containment.cpp'
     for header in headers:
