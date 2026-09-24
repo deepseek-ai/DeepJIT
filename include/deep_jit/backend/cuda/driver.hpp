@@ -13,6 +13,7 @@ DJ_DECL_LAZY_DL_HANDLE(get_cuda_handle, "libcuda.so.1");
 
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuGetErrorName);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuGetErrorString);
+DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuFuncGetAttribute);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuFuncSetAttribute);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLaunchKernelEx);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuTensorMapEncodeTiled);
