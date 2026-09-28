@@ -9,12 +9,10 @@
 #include <type_traits>
 
 #include <cuda.h>
-#include <torch/csrc/stable/accelerator.h>
-#include <torch/csrc/stable/c/shim.h>
-#include <torch/headeronly/util/shim_utils.h>
 
 #include <deep_jit/backend/cuda/driver.hpp>
 #include <deep_jit/backend/cuda/options.hpp>
+#include <deep_jit/backend/cuda/stable_torch_utils.h>
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/gil.hpp>
@@ -29,13 +27,6 @@ inline void* kernel_arg_pointer(const T& value) {
     } else {
         return const_cast<void*>(static_cast<const void*>(&value));
     }
-}
-
-// Utility to get the current CUDA stream for a given device using stable APIs.
-// Returns a CUstream for use with the CUDA Driver API.
-inline CUstream get_current_cuda_stream(const int32_t device_index) {
-    auto stream = torch::stable::accelerator::getCurrentStream(device_index);
-    return static_cast<CUstream>(stream.nativeHandle());
 }
 
 // Immutable CUDA kernel handles with shared ownership. Driver resources are

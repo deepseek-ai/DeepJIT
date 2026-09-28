@@ -23,11 +23,10 @@
 
 #include <cuda_runtime.h>
 #include <pybind11/pybind11.h>
-#include <torch/csrc/stable/c/shim.h>
-#include <torch/headeronly/util/shim_utils.h>
 #include <unistd.h>
 
 #include <deep_jit/backend/cuda/backend.hpp>
+#include <deep_jit/backend/cuda/stable_torch_utils.h>
 #include <deep_jit/cache/memory.hpp>
 #include <deep_jit/python_api.hpp>
 #include <deep_jit/utils/command.hpp>
@@ -46,46 +45,14 @@ namespace {
 using Runtime = deep_jit::Runtime<deep_jit::CUDA>;
 using CompilerOptions = deep_jit::cuda::CompilerOptions;
 using LaunchOptions = deep_jit::cuda::LaunchOptions;
+using TorchCUDAStreamGuard = deep_jit::cuda::TorchCUDAStreamGuard;
+using deep_jit::cuda::get_stream_from_pool;
 namespace fs = std::filesystem;
 
 deep_jit::LazyInit<Runtime> python_api_jit(nullptr);
 int python_api_num_initializations = 0;
 std::shared_ptr<Runtime> process_test_runtime;
 std::shared_ptr<Runtime> gil_test_runtime;
-
-cudaStream_t get_stream_from_pool(const int32_t device_index) {
-    void* stream = nullptr;
-    TORCH_ERROR_CODE_CHECK(
-        torch_get_cuda_stream_from_pool(false, device_index, &stream));
-    return static_cast<cudaStream_t>(stream);
-}
-
-class TorchCUDAStreamGuard {
-public:
-    TorchCUDAStreamGuard() = delete;
-
-    explicit TorchCUDAStreamGuard(cudaStream_t stream, int32_t device_index) {
-        TORCH_ERROR_CODE_CHECK(
-            aoti_torch_create_cuda_stream_guard(
-                static_cast<void*>(stream), device_index, &guard_));
-    }
-
-    ~TorchCUDAStreamGuard() {
-        if (guard_)
-            (void)aoti_torch_delete_cuda_stream_guard(guard_);
-    }
-
-    // Match c10::cuda::CUDAStreamGuard: copying is disallowed because the
-    // guard has unique ownership, and moving is disallowed because an RAII
-    // stream guard has no uninitialized state to leave behind.
-    TorchCUDAStreamGuard(const TorchCUDAStreamGuard&) = delete;
-    TorchCUDAStreamGuard& operator=(const TorchCUDAStreamGuard&) = delete;
-    TorchCUDAStreamGuard(TorchCUDAStreamGuard&&) = delete;
-    TorchCUDAStreamGuard& operator=(TorchCUDAStreamGuard&&) = delete;
-
-private:
-    CUDAStreamGuardHandle guard_ = nullptr;
-};
 
 const fs::path& get_test_cuda_project_dir() {
     static const fs::path path = [] {
