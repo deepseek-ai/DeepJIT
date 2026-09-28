@@ -1680,6 +1680,69 @@ void test_device(Runtime& runtime) {
     }
 }
 
+void test_cuda_driver_device_wrappers() {
+    int device_index = 0;
+    DJ_CUDA_RUNTIME_CHECK(cudaGetDevice(&device_index));
+    DJ_CUDA_RUNTIME_CHECK(cudaFree(nullptr));
+
+    CUdevice device = 0;
+    DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuDeviceGet(&device, device_index));
+    int num_sms = 0;
+    DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuDeviceGetAttribute(
+        &num_sms, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+    DJ_HOST_ASSERT(num_sms > 0,
+                   "CUDA driver reported {} SMs for device {}", num_sms, device_index);
+
+    cudaDeviceProp prop{};
+    DJ_CUDA_RUNTIME_CHECK(cudaGetDeviceProperties(&prop, device_index));
+    DJ_HOST_ASSERT(num_sms == prop.multiProcessorCount,
+                   "SM count mismatch for device {}: driver {}, runtime {}",
+                   device_index, num_sms, prop.multiProcessorCount);
+}
+
+bool test_cuda_driver_stream_batch_mem_op_wrapper() {
+    int device_index = 0;
+    DJ_CUDA_RUNTIME_CHECK(cudaGetDevice(&device_index));
+    DJ_CUDA_RUNTIME_CHECK(cudaFree(nullptr));
+    CUdevice device = 0;
+    DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuDeviceGet(&device, device_index));
+    int supported = 0;
+    DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuDeviceGetAttribute(
+        &supported, CU_DEVICE_ATTRIBUTE_CAN_USE_64_BIT_STREAM_MEM_OPS, device));
+    if (not supported)
+        return false;
+
+    cudaStream_t stream = nullptr;
+    uint64_t* device_value = nullptr;
+    constexpr uint64_t expected = 0x123456789abcdef0ULL;
+    try {
+        DJ_CUDA_RUNTIME_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        DJ_CUDA_RUNTIME_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_value), sizeof(uint64_t)));
+
+        CUstreamBatchMemOpParams op{};
+        op.operation = CU_STREAM_MEM_OP_WRITE_VALUE_64;
+        op.writeValue.address = reinterpret_cast<CUdeviceptr>(device_value);
+        op.writeValue.value64 = expected;
+        DJ_CUDA_DRIVER_CHECK(deep_jit::cuda::driver::lazy_cuStreamBatchMemOp(stream, 1, &op, 0));
+
+        DJ_CUDA_RUNTIME_CHECK(cudaStreamSynchronize(stream));
+        uint64_t observed = 0;
+        DJ_CUDA_RUNTIME_CHECK(cudaMemcpy(&observed, device_value, sizeof(observed), cudaMemcpyDeviceToHost));
+        DJ_HOST_ASSERT(observed == expected,
+                       "batched stream write/readback mismatch: expected {:#x}, got {:#x}",
+                       expected, observed);
+    } catch (...) {
+        if (device_value != nullptr)
+            cudaFree(device_value);
+        if (stream != nullptr)
+            cudaStreamDestroy(stream);
+        throw;
+    }
+    DJ_CUDA_RUNTIME_CHECK(cudaFree(device_value));
+    DJ_CUDA_RUNTIME_CHECK(cudaStreamDestroy(stream));
+    return true;
+}
+
 void test_tma_driver_wrapper(Runtime& runtime) {
     void* tensor_data = nullptr;
     unsigned int* output = nullptr;
@@ -3280,6 +3343,8 @@ void run_tests(pybind11::module_ module) {
     DJ_HOST_ASSERT(runtime->disk_cache.paths.front() == cache_root,
                    "library-prefixed cache directory was not selected");
     run_test("CUDA device", [&] { test_device(*runtime); });
+    run_test("CUDA driver device wrappers", test_cuda_driver_device_wrappers);
+    run_test("CUDA driver stream batch mem op wrapper", test_cuda_driver_stream_batch_mem_op_wrapper);
     run_test("TMA driver wrapper and kernel argument", [&] { test_tma_driver_wrapper(*runtime); });
     run_test("compiler options", [&] { test_options(*runtime); });
     run_test("runtime launch features", [&] { test_runtime_launch_features(*runtime); });
