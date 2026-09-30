@@ -48,12 +48,19 @@ public:
         fsync_dir(path);
 
         // Atomically rename the temporary directory to the final cache path
-        // NOTES: if another rank already created dir_path, rename will fail — that's fine
+        // A failed rename is only recoverable if a committed entry is visible.
         make_dirs(commit_path.parent_path());
         std::error_code error_code;
         std::filesystem::rename(path, commit_path, error_code);
         if (error_code) {
-            // Another rank beat us, then clean up our dir and use the existing one
+            // Check the marker with a separate error code to preserve the rename
+            // diagnostic, including when the destination cannot be inspected.
+            std::error_code marker_error;
+            if (not std::filesystem::exists(commit_path / kCommitFileName, marker_error) or marker_error)
+                throw std::filesystem::filesystem_error("failed to publish disk cache entry", path, commit_path, error_code);
+
+            // A committed destination is safe to reuse, even if a distributed
+            // filesystem reported an error after completing our own rename.
             // NOTES: avoid `std::filesystem::remove_all` here — it can segfault on
             // distributed filesystems, when concurrent processes operate
             // on the same parent directory, causing stale directory entries
