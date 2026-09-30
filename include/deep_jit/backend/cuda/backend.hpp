@@ -61,7 +61,7 @@ public:
           compiler_info(get_compiler_info()) {}
 
     [[nodiscard]] CompilerInfo get_compiler_info() const {
-        const auto version = call_external_command(toolkit.nvcc.string() + " --version");
+        const auto version = call_external_command(str::shell_join({toolkit.nvcc.string(), "--version"}));
 
         // Should support arch-family
         std::smatch match;
@@ -106,10 +106,10 @@ public:
             args.emplace_back("--include-path");
             args.emplace_back(include_dir.string());
         }
-        const auto command = str::join(args);
+        const auto command = str::shell_join(args);
 
         // NOTES: change directory into a temporary empty directory to prevent same name include files
-        const auto cd_command = "cd " + dir.string() + " && ";
+        const auto cd_command = "cd " + str::shell_quote(dir.string()) + " && ";
 
         // Compile
         const auto compiler_output = call_external_command(cd_command + command, print_compiler_command);
@@ -132,8 +132,8 @@ public:
         // Run post hook
         if (options.post_hook) {
             const auto hook_path = config.get_python_path(*options.post_hook);
-            const auto hook_command = "cd " + dir.string() +
-                                      " && python " + hook_path.string() + " " + cubin_path.string();
+            const auto hook_command = "cd " + str::shell_quote(dir.string()) +
+                                      " && " + str::shell_join({"python", hook_path.string(), cubin_path.string()});
             call_external_command(hook_command, print_compiler_command);
         }
 
@@ -142,7 +142,7 @@ public:
             const auto ptx_path = dir / "kernel.ptx";
             auto ptx_args = args;
             ptx_args[2] = "--ptx", ptx_args[4] = ptx_path.string();
-            call_external_command(cd_command + str::join(ptx_args), print_compiler_command);
+            call_external_command(cd_command + str::shell_join(ptx_args), print_compiler_command);
             DJ_HOST_ASSERT(std::filesystem::is_regular_file(ptx_path) and std::filesystem::file_size(ptx_path) != 0,
                            "NVCC did not produce a valid PTX: {}", ptx_path.string());
         }
@@ -151,7 +151,7 @@ public:
         if (options.dump_sass.value_or(false)) {
             DJ_HOST_ASSERT(toolkit.cuobjdump.has_value());
             const auto sass_path = dir / "kernel.sass";
-            const auto sass_command = toolkit.cuobjdump->string() + " --dump-sass " + cubin_path.string();
+            const auto sass_command = str::shell_join({toolkit.cuobjdump->string(), "--dump-sass", cubin_path.string()});
             const auto sass = call_external_command(cd_command + sass_command, print_compiler_command);
             DJ_HOST_ASSERT(not sass.empty(), "cuobjdump did not produce valid SASS for {}", cubin_path.string());
             write_file_sync(sass_path, sass);
