@@ -73,6 +73,15 @@ pybind11 or the Python C API from this helper. In CMake, use
 `target_compile_definitions(my_target PRIVATE DJ_DISABLE_GIL=1)`. Set the macro
 consistently for every source file compiled into the consumer target.
 
+For CUDA extensions using both `TORCH_TARGET_VERSION` and pybind11 (including
+DeepJIT's default GIL support), install standalone pybind11
+(`python -m pip install pybind11`) and put its include directory before PyTorch's
+include directories. PyTorch's bundled pybind11 headers reject this macro. With
+`torch.utils.cpp_extension.load`, add `pybind11.get_include()` to
+`extra_include_paths` after importing `pybind11`. The CUDA integration test uses
+this setup and can be run with `python tests/test_cuda.py` once the CUDA and host
+dependencies above are installed.
+
 Add `DeepJIT/include` to the include path of the host target, then include:
 
 ```cmake
