@@ -222,6 +222,7 @@ def validate_header_self_containment(temporary_dir):
         source_path.write_text(f'#include <{header.as_posix()}>\n', encoding='utf-8')
         command = [
             os.environ.get('CXX', 'c++'), '-std=c++20', '-fsyntax-only', '-Werror',
+            '-DTORCH_TARGET_VERSION=0x020a000000000000', '-DUSE_CUDA',
             '-Wno-attributes', '-Wno-deprecated-declarations',
             '-Wno-missing-field-initializers', '-Wno-psabi',
             str(source_path),
@@ -787,6 +788,7 @@ def run_worker():
             sources=[str(TEST_CUDA_PROJECT / 'main.cpp')],
             extra_cflags=[
                 '-std=c++20', '-O3', '-fPIC', '-Wall', '-Wextra', '-Werror',
+                '-DTORCH_TARGET_VERSION=0x020a000000000000', '-DUSE_CUDA',
                 '-Wno-attributes', '-Wno-missing-field-initializers',
                 '-Wno-psabi', '-Wno-deprecated-declarations',
             ],

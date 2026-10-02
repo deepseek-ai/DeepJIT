@@ -8,11 +8,11 @@
 #include <memory>
 #include <type_traits>
 
-#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
 
 #include <deep_jit/backend/cuda/driver.hpp>
 #include <deep_jit/backend/cuda/options.hpp>
+#include <deep_jit/backend/cuda/stable_torch_utils.h>
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/gil.hpp>
@@ -47,7 +47,7 @@ public:
 
     static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Check existence
         const auto cubin_path = dir / "kernel.cubin";
@@ -91,7 +91,7 @@ public:
     template <typename... Args>
     void launch(const LaunchOptions& launch_options, const Args&... args) const {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Checks
         DJ_HOST_ASSERT(kernel_handle != nullptr, "kernel must be loaded before launch");
@@ -163,7 +163,7 @@ public:
         config.sharedMemBytes = *launch_options.num_smem_bytes;
         config.hStream = launch_options.stream
             ? *launch_options.stream
-            : at::cuda::getCurrentCUDAStream().stream();
+            : get_current_cuda_stream(torch::stable::accelerator::getCurrentDeviceIndex());
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLaunchKernelEx(

@@ -85,7 +85,7 @@ public:
         backend.compile(source, entry.path, env, config, options);
 
         // Publish
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
         return entry.commit();
     }
 
