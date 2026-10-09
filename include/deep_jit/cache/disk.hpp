@@ -44,12 +44,14 @@ public:
             return path;
 
         // Mark then fsync the whole tree before publishing
-        write_file_sync(path / kCommitFileName, "");
+        // allow the commit file to be read or write by any user
+        write_file_sync(path / kCommitFileName, "", 0666);
         fsync_dir(path);
 
         // Atomically rename the temporary directory to the final cache path
         // NOTES: if another rank already created dir_path, rename will fail — that's fine
-        make_dirs(commit_path.parent_path());
+        // the parent directory is the `/cache` dir, which should be shared by all users, so we make it 777
+        make_dirs(commit_path.parent_path(), 0777);
         std::error_code error_code;
         std::filesystem::rename(path, commit_path, error_code);
         if (error_code) {
@@ -128,7 +130,8 @@ struct DiskCache {
 
         // Miss, create an empty temporary directory
         const auto temporary_path = paths[0] / "tmp" / get_uuid();
-        std::filesystem::create_directories(temporary_path);
+        // Allow other users to traverse the entry regardless of the creator's umask.
+        make_dirs(temporary_path, 0755);
         return DiskCacheEntry{false, temporary_path, paths[0] / "cache" / entry_name};
     }
 };
