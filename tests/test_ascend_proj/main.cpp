@@ -166,6 +166,62 @@ int launch_increment(Runtime& runtime,
     return copy_from_device<int>(output).front();
 }
 
+void test_aicpu(Runtime& runtime) {
+    const std::string source = R"(
+#include <cstdint>
+#ifndef TEST_BIAS
+#define TEST_BIAS 0
+#endif
+extern "C" unsigned int helper() { return 0; }
+extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int64_t b, float c) {
+    out[0] = a + TEST_BIAS;
+    out[1] = b;
+    out[2] = static_cast<int64_t>(c * 8);
+    return 0;
+}
+)";
+    const CompilerOptions options{.aicpu = true};
+    const auto artifact = runtime.compile_without_load("aicpu_store", source, options);
+    DJ_HOST_ASSERT((Runtime::Kernel::parse_kernel_names(artifact / "kernel.aicpu.so") ==
+                    std::vector<std::string>{"store"}));
+    const auto kernel = runtime.compile("aicpu_store", source, options);
+    DJ_HOST_ASSERT(kernel == runtime.compile("aicpu_store", source, options));
+    const auto check = [&](const std::shared_ptr<Runtime::Kernel>& candidate, int bias) {
+        DeviceBuffer output(3 * sizeof(int64_t));
+        copy_to_device(output, std::vector<int64_t>(3, -1));
+        runtime.launch(candidate, {.num_blocks = 1}, output.data, int32_t(-7), int64_t(0x123456789abcdef), 1.5f);
+        DJ_ACL_CHECK(aclrtSynchronizeDevice());
+        DJ_HOST_ASSERT((copy_from_device<int64_t>(output) ==
+                        std::vector<int64_t>{-7 + bias, 0x123456789abcdef, 12}));
+    };
+    check(kernel, 0);
+    check(deep_jit::Ascend::load(artifact, runtime.env), 0);
+    auto variant = runtime.default_compiler_options.override_with(options);
+    variant.optimize_level = "0";  // Non-inlined interface calls must bind to this variant.
+    variant.aicpu_flags->emplace_back("-DTEST_BIAS=13");
+    variant.aicpu_linker_flags->emplace_back("--build-id=none");
+    check(runtime.compile("aicpu_store", source, variant), 13);
+    check(runtime.compile("aicpu_store", source, variant.override_with({
+        .extra_aicpu_flags = {"-UTEST_BIAS", "-DTEST_BIAS=17"},
+        .extra_aicpu_linker_flags = {"--build-id=sha1"},
+    })), 17);
+    check(kernel, 0);
+    runtime.default_compiler_options.aicpu = true;
+    DJ_HOST_ASSERT(kernel == runtime.compile("aicpu_store", source));
+    const auto core = runtime.compile("aicpu_core_override", get_increment_source(5), {.aicpu = false});
+    DJ_HOST_ASSERT(launch_increment(runtime, core, 17) == 22);
+    runtime.default_compiler_options.aicpu = false;
+    expect_failure([&] { runtime.launch(kernel, {.num_blocks = 1, .num_ubuf_bytes = 32}); },
+                   "AICPU kernels do not support dynamic UB");
+    const std::string empty_source = "extern \"C\" __aicpu__ __global__ unsigned int empty() { return 0; }";
+    const auto empty = runtime.compile("aicpu_empty", empty_source, {.aicpu = true, .dump_asm = true});
+    runtime.launch(empty, {.num_blocks = 1});
+    DJ_ACL_CHECK(aclrtSynchronizeDevice());
+    const auto empty_artifact = runtime.compile_without_load("aicpu_empty", empty_source, options);
+    DJ_HOST_ASSERT(fs::is_regular_file(empty_artifact / "asm/kernel.s"));
+    expect_failure([&] { runtime.compile("aicpu_multiple", source + empty_source, options); }, "found 2");
+}
+
 void test_environment(const fs::path& cache_root) {
     set_env("DJ_TEST_VALUE", "global");
     set_env("ASCEND_ENV_TEST_VALUE", "library");
@@ -334,6 +390,7 @@ void test_device(Runtime& runtime) {
 
 void test_options(Runtime& runtime) {
     const auto& defaults = runtime.default_compiler_options;
+    DJ_HOST_ASSERT(defaults.aicpu == false);
     DJ_HOST_ASSERT(defaults.optimize_level == "2");
     DJ_HOST_ASSERT(defaults.arch == runtime.device.get_npu_arch());
     DJ_HOST_ASSERT(defaults.bisheng_flags.has_value());
@@ -360,6 +417,30 @@ void test_options(Runtime& runtime) {
     DJ_HOST_ASSERT(std::ranges::find(bisheng_flags, "-O3") != bisheng_flags.end());
     DJ_HOST_ASSERT(std::ranges::find(bisheng_flags, "-DTEST_OPTION=1") != bisheng_flags.end());
     DJ_HOST_ASSERT(overridden.get_linker_flags().back() == "--test-linker-option");
+
+    const auto cpu_extra = overridden.override_with({
+        .extra_aicpu_flags = {"-DTEST_CPU_OPTION=1"},
+        .extra_aicpu_linker_flags = {"--build-id=none"},
+    });
+    DJ_HOST_ASSERT(runtime.cache_key("source", cpu_extra) == runtime.cache_key("source", overridden));
+    const auto cpu = cpu_extra.override_with({.aicpu = true});
+    DJ_HOST_ASSERT(cpu.get_bisheng_flags().back() == "-DTEST_CPU_OPTION=1");
+    DJ_HOST_ASSERT(cpu.get_linker_flags().back() == "--build-id=none");
+    DJ_HOST_ASSERT(runtime.cache_key("source", cpu) !=
+                   runtime.cache_key("source", overridden.override_with({.aicpu = true})));
+    const auto cpu_appended = cpu.override_with({
+        .extra_bisheng_flags = {"-DCORE_ONLY=1"},
+        .extra_linker_flags = {"--core-only"},
+        .extra_aicpu_flags = {"-DTEST_CPU_OPTION_2=1"},
+        .extra_aicpu_linker_flags = {"--build-id=sha1"},
+    });
+    DJ_HOST_ASSERT((cpu_appended.extra_aicpu_flags ==
+                    std::vector<std::string>{"-DTEST_CPU_OPTION=1", "-DTEST_CPU_OPTION_2=1"}));
+    DJ_HOST_ASSERT((cpu_appended.extra_aicpu_linker_flags ==
+                    std::vector<std::string>{"--build-id=none", "--build-id=sha1"}));
+    DJ_HOST_ASSERT(runtime.cache_key("source", cpu) == runtime.cache_key("source", cpu.override_with({
+        .extra_bisheng_flags = {"-DCORE_ONLY=1"}, .extra_linker_flags = {"--core-only"},
+    })));
 
     const auto launch_defaults = LaunchOptions::default_options(runtime.env);
     DJ_HOST_ASSERT(launch_defaults.num_ubuf_bytes == 0);
@@ -759,6 +840,7 @@ void run_tests(pybind11::module_ module) {
 
     const auto runtime = make_runtime(get_test_project_dir() / "include_original");
     run_test("Ascend device", [&] { test_device(*runtime); });
+    run_test("AICPU", [&] { test_aicpu(*runtime); });
     run_test("compiler and launch options", [&] { test_options(*runtime); });
     run_test("artifact and metadata", [&] { test_artifact_and_metadata(*runtime); });
     run_test("template source and runtime arguments", [&] { test_increment_and_cache(*runtime); });

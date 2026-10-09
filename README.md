@@ -412,3 +412,14 @@ Assembly dumping writes Bisheng saved intermediates under the artifact's `asm/` 
 Device queries are available through `jit->device`, including `get_npu_arch()`, `get_num_sms()`/`get_num_aicore_cores()`, vector and cube core counts, UB size, and L2 size.
 
 Toolkit discovery checks `ASCEND_HOME_PATH`, `ASCEND_TOOLKIT_HOME`, `/usr/local/Ascend/ascend-toolkit/latest`, and `/usr/local/Ascend/cann`, in that order.
+
+For AICPU kernels, use the same `Runtime<Ascend>` with `.aicpu = true`:
+
+```cpp
+const auto kernel = jit->compile("store", source, {.aicpu = true});
+jit->launch(kernel, {.num_blocks = 1}, output, value);
+```
+
+The source must define one `__aicpu__ __global__` kernel returning `unsigned int`. AICPU uses `aicpu_flags` / `aicpu_linker_flags` from `CompilerOptions::default_options()`, ignores `arch`, and requires zero dynamic UB. Loading and launch select the AICPU path automatically. Validated on Ascend 950 with CANN 9.2.
+
+Append AICPU compiler/linker options with `extra_aicpu_flags` / `extra_aicpu_linker_flags`; `extra_bisheng_flags` / `extra_linker_flags` apply only to AICore. Runtime defaults and per-compile extra flags are concatenated in that order.

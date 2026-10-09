@@ -82,7 +82,8 @@ public:
         dir = std::filesystem::absolute(dir).lexically_normal();
         const auto source_path = dir / "kernel.asc";
         const auto relocatable_path = dir / "kernel.rel.o";
-        const auto binary_path = dir / "kernel.o";
+        const bool aicpu = options.aicpu.value_or(false);
+        const auto binary_path = dir / (aicpu ? "kernel.aicpu.so" : "kernel.o");
         const bool print_compiler_command = env.get<bool>("JIT_DEBUG", false) or
                                             env.get<bool>("JIT_PRINT_COMPILER_COMMAND", false);
 
@@ -129,10 +130,10 @@ public:
             make_dirs(asm_dir);
             auto asm_args = base_bisheng_args;
             asm_args.insert(asm_args.end(), {
-                "-save-temps",
+                aicpu ? "-S" : "-save-temps",
                 source_path.string(),
                 "-o",
-                (asm_dir / "kernel.rel.o").string(),
+                (asm_dir / (aicpu ? "kernel.s" : "kernel.rel.o")).string(),
             });
             call_external_command("cd " + asm_dir.string() + " && " + str::join(asm_args),
                                   print_compiler_command);

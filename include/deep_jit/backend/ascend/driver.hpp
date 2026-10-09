@@ -19,6 +19,9 @@ DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtGetSocName);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtGetDeviceInfo);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtSynchronizeDevice);
 
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryLoadFromData);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtRegisterCpuFunc);
+
 inline void check_acl(const aclError error, const char* expression) {
     if (error == ACL_SUCCESS)
         return;

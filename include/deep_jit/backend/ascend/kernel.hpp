@@ -13,6 +13,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +25,7 @@
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/gil.hpp>
+#include <deep_jit/utils/filesystem.hpp>
 
 namespace deep_jit::ascend {
 
@@ -38,6 +40,9 @@ constexpr size_t align_kernel_arg(const size_t offset) {
 // Immutable Ascend kernel handles with shared ownership. Driver resources are
 // unloaded when the last shared owner is destroyed.
 class Kernel {
+    bool aicpu = false;
+    std::string binary_data;
+
 public:
     aclrtBinHandle binary_handle{};
     aclrtFuncHandle kernel_handle{};
@@ -77,6 +82,50 @@ public:
         input.seekg(static_cast<std::streamoff>(header.e_shoff));
         input.read(reinterpret_cast<char*>(sections.data()), static_cast<std::streamsize>(section_table_size));
         DJ_HOST_ASSERT(input, "failed to read ELF section table: {}", path.string());
+
+        if (header.e_type == ET_DYN and header.e_machine == EM_AARCH64) {
+            const auto data = read(path);
+            const auto check_range = [&](uint64_t offset, uint64_t size) {
+                DJ_HOST_ASSERT(offset <= data.size() and size <= data.size() - offset,
+                               "truncated AICPU ELF: {}", path.string());
+            };
+            // Match exported <name>/<name>_interface function pairs, as Bisheng
+            // generates them only for __aicpu__ kernels, not ordinary helpers.
+            std::set<std::string> symbols;
+            for (const auto& section: sections) {
+                if (section.sh_type != SHT_DYNSYM)
+                    continue;
+                DJ_HOST_ASSERT(section.sh_entsize == sizeof(Elf64_Sym) and
+                               section.sh_size % sizeof(Elf64_Sym) == 0 and section.sh_link < sections.size(),
+                               "invalid AICPU ELF symbol table: {}", path.string());
+                const auto& strings = sections[section.sh_link];
+                DJ_HOST_ASSERT(strings.sh_type == SHT_STRTAB, "invalid AICPU ELF string table");
+                check_range(section.sh_offset, section.sh_size);
+                check_range(strings.sh_offset, strings.sh_size);
+                const std::string_view names(data.data() + strings.sh_offset, strings.sh_size);
+                for (uint64_t offset = 0; offset < section.sh_size; offset += sizeof(Elf64_Sym)) {
+                    Elf64_Sym symbol{};
+                    std::memcpy(&symbol, data.data() + section.sh_offset + offset, sizeof(symbol));
+                    if (ELF64_ST_TYPE(symbol.st_info) != STT_FUNC or ELF64_ST_BIND(symbol.st_info) != STB_GLOBAL or
+                        ELF64_ST_VISIBILITY(symbol.st_other) != STV_DEFAULT or symbol.st_shndx == SHN_UNDEF)
+                        continue;
+                    DJ_HOST_ASSERT(symbol.st_name < names.size(), "invalid AICPU ELF symbol name");
+                    const auto end = names.find('\0', symbol.st_name);
+                    DJ_HOST_ASSERT(end != std::string_view::npos, "unterminated AICPU ELF symbol name");
+                    symbols.emplace(names.substr(symbol.st_name, end - symbol.st_name));
+                }
+            }
+            std::vector<std::string> kernels;
+            constexpr std::string_view suffix = "_interface";
+            for (const auto& symbol: symbols) {
+                if (symbol.ends_with(suffix)) {
+                    const auto name = symbol.substr(0, symbol.size() - suffix.size());
+                    if (symbols.contains(name))
+                        kernels.push_back(name);
+                }
+            }
+            return kernels;
+        }
 
         // Read section names
         const auto string_table_index = header.e_shstrndx == SHN_XINDEX
@@ -126,7 +175,8 @@ public:
         [[maybe_unused]] GilScopedRelease gil_release;
 
         // Check existence
-        const auto binary_path = dir / "kernel.o";
+        const bool is_aicpu = std::filesystem::is_regular_file(dir / "kernel.aicpu.so");
+        const auto binary_path = dir / (is_aicpu ? "kernel.aicpu.so" : "kernel.o");
         DJ_HOST_ASSERT(std::filesystem::is_regular_file(binary_path),
                        "missing Ascend binary: {}", binary_path.string());
 
@@ -144,9 +194,23 @@ public:
                        binary_path.string(), kernel_names.size());
 
         auto kernel = std::make_shared<Kernel>();
-        DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromFile(binary_path.c_str(), nullptr, &kernel->binary_handle));
-        DJ_ACL_CHECK(driver::lazy_aclrtBinaryGetFunction(
-            kernel->binary_handle, kernel_names.front().c_str(), &kernel->kernel_handle));
+        kernel->aicpu = is_aicpu;
+        if (is_aicpu) {
+            kernel->binary_data = read(binary_path);
+            aclrtBinaryLoadOption option{};
+            option.type = ACL_RT_BINARY_LOAD_OPT_CPU_KERNEL_MODE;
+            option.value.cpuKernelMode = 2;  // Load AICPU .so from host memory.
+            aclrtBinaryLoadOptions options{&option, 1};
+            DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromData(
+                kernel->binary_data.data(), kernel->binary_data.size(), &options, &kernel->binary_handle));
+            const auto interface_name = kernel_names.front() + "_interface";
+            DJ_ACL_CHECK(driver::lazy_aclrtRegisterCpuFunc(
+                kernel->binary_handle, interface_name.c_str(), kernel_names.front().c_str(), &kernel->kernel_handle));
+        } else {
+            DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromFile(binary_path.c_str(), nullptr, &kernel->binary_handle));
+            DJ_ACL_CHECK(driver::lazy_aclrtBinaryGetFunction(
+                kernel->binary_handle, kernel_names.front().c_str(), &kernel->kernel_handle));
+        }
 
         // Print and return
         if (print_load_time) {
@@ -167,6 +231,8 @@ public:
                        "Ascend block count must be positive");
         DJ_HOST_ASSERT(launch_options.num_ubuf_bytes.has_value() and *launch_options.num_ubuf_bytes >= 0,
                        "Ascend dynamic UB size must not be negative");
+        DJ_HOST_ASSERT(not aicpu or *launch_options.num_ubuf_bytes == 0,
+                       "AICPU kernels do not support dynamic UB");
         DJ_HOST_ASSERT(launch_options.num_launch_timeout_secs.has_value() and
                        *launch_options.num_launch_timeout_secs >= 0 and
                        *launch_options.num_launch_timeout_secs <= std::numeric_limits<uint16_t>::max(),
@@ -176,7 +242,8 @@ public:
         constexpr size_t parameter_size = [] {
             size_t offset = 0;
             ((offset = align_kernel_arg<Args>(offset) + sizeof(Args)), ...);
-            return (offset + 7) & ~static_cast<size_t>(7);
+            // ACL requires a nonempty host payload even for zero-argument kernels.
+            return std::max<size_t>(8, (offset + 7) & ~static_cast<size_t>(7));
         }();
         std::array<uint8_t, parameter_size> parameter_buffer{};
         size_t offset = 0;
@@ -212,8 +279,7 @@ public:
             : c10_npu::getCurrentNPUStream();
         DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
             kernel_handle, *launch_options.num_blocks, stream, config_ptr,
-            sizeof...(Args) == 0 ? nullptr : parameter_buffer.data(),
-            parameter_size, nullptr, 0));
+            parameter_buffer.data(), parameter_size, nullptr, 0));
 
         // Launch blocking
         if (get_env<bool>("ASCEND_LAUNCH_BLOCKING", false))
@@ -230,6 +296,7 @@ public:
         }
         binary_handle = nullptr;
         kernel_handle = nullptr;
+        binary_data.clear();
     }
 };
 

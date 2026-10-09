@@ -19,18 +19,24 @@ namespace deep_jit::ascend {
 
 // Per-compile Bisheng options. Unset fields inherit from backend defaults.
 struct CompilerOptions {
+    std::optional<bool> aicpu;
     std::optional<std::string> optimize_level;
     std::optional<int> arch;
     std::optional<bool> debug_info;
     std::optional<bool> dump_asm;
     std::optional<std::vector<std::string>> bisheng_flags;
     std::optional<std::vector<std::string>> linker_flags;
+    std::optional<std::vector<std::string>> aicpu_flags;
+    std::optional<std::vector<std::string>> aicpu_linker_flags;
 
     std::vector<std::string> extra_bisheng_flags;
     std::vector<std::string> extra_linker_flags;
+    std::vector<std::string> extra_aicpu_flags;
+    std::vector<std::string> extra_aicpu_linker_flags;
 
     static CompilerOptions default_options(const Env& env, Device& device) {
         return {
+            .aicpu = false,
             .optimize_level = "2",
             .arch = device.get_npu_arch(),
             .debug_info = env.get<bool>("JIT_KERNEL_DEBUG_INFO", false),
@@ -45,11 +51,25 @@ struct CompilerOptions {
                 "-Ttext", "0",
                 "--no-mmap-output-file",
             },
+            .aicpu_flags = std::vector<std::string> {
+                "--cce-aicore-lang", "--cce-lite-aicpu", "--cce-aicpu-only",
+                "--cce-aicpu-launch-with-interface",
+                // CANN 9.2 requires an AICore arch even for the Cortex-A55 pass.
+                "--cce-aicore-arch=dav-c310-vec", "-fPIC", "-c",
+            },
+            .aicpu_linker_flags = std::vector<std::string> {
+                // Keep function addresses nonzero and bind local definitions
+                // so JIT variants do not interpose through RTLD_GLOBAL.
+                "-m", "aicpulinux", "-shared", "-soname=libkernel.aicpu.so",
+                "-Bsymbolic", "--no-mmap-output-file",
+            },
         };
     }
 
     [[nodiscard]] CompilerOptions override_with(const CompilerOptions& overrides) const {
         CompilerOptions result = *this;
+        if (overrides.aicpu)
+            result.aicpu = overrides.aicpu;
         if (overrides.optimize_level)
             result.optimize_level = overrides.optimize_level;
         if (overrides.arch)
@@ -62,6 +82,10 @@ struct CompilerOptions {
             result.bisheng_flags = overrides.bisheng_flags;
         if (overrides.linker_flags)
             result.linker_flags = overrides.linker_flags;
+        if (overrides.aicpu_flags)
+            result.aicpu_flags = overrides.aicpu_flags;
+        if (overrides.aicpu_linker_flags)
+            result.aicpu_linker_flags = overrides.aicpu_linker_flags;
         result.extra_bisheng_flags.insert(
             result.extra_bisheng_flags.end(),
             overrides.extra_bisheng_flags.begin(),
@@ -70,18 +94,28 @@ struct CompilerOptions {
             result.extra_linker_flags.end(),
             overrides.extra_linker_flags.begin(),
             overrides.extra_linker_flags.end());
+        result.extra_aicpu_flags.insert(
+            result.extra_aicpu_flags.end(),
+            overrides.extra_aicpu_flags.begin(),
+            overrides.extra_aicpu_flags.end());
+        result.extra_aicpu_linker_flags.insert(
+            result.extra_aicpu_linker_flags.end(),
+            overrides.extra_aicpu_linker_flags.begin(),
+            overrides.extra_aicpu_linker_flags.end());
         return result;
     }
 
     [[nodiscard]] std::vector<std::string> get_bisheng_flags() const {
         DJ_HOST_ASSERT(optimize_level.has_value() and not optimize_level->empty(),
                        "optimization level must be specified");
-        DJ_HOST_ASSERT(arch.has_value() and *arch > 0, "Ascend architecture must be specified");
+        if (not aicpu.value_or(false))
+            DJ_HOST_ASSERT(arch.has_value() and *arch > 0, "Ascend architecture must be specified");
 
         std::vector<std::string> flags = {
             "-O" + *optimize_level,
-            "--npu-arch=dav-" + std::to_string(*arch),
         };
+        if (not aicpu.value_or(false))
+            flags.emplace_back("--npu-arch=dav-" + std::to_string(*arch));
         if (debug_info.value_or(false)) {
             flags.insert(flags.end(), {
                 "-g",
@@ -90,21 +124,27 @@ struct CompilerOptions {
                 "-gline-tables-only",
             });
         }
-        if (bisheng_flags)
-            flags.insert(flags.end(), bisheng_flags->begin(), bisheng_flags->end());
-        flags.insert(flags.end(), extra_bisheng_flags.begin(), extra_bisheng_flags.end());
+        const auto& mode_flags = aicpu.value_or(false) ? aicpu_flags : bisheng_flags;
+        if (mode_flags)
+            flags.insert(flags.end(), mode_flags->begin(), mode_flags->end());
+        const auto& extra_flags = aicpu.value_or(false) ? extra_aicpu_flags : extra_bisheng_flags;
+        flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
         return flags;
     }
 
     [[nodiscard]] std::vector<std::string> get_linker_flags() const {
         std::vector<std::string> flags;
-        if (linker_flags)
-            flags = *linker_flags;
-        flags.insert(flags.end(), extra_linker_flags.begin(), extra_linker_flags.end());
+        const auto& mode_flags = aicpu.value_or(false) ? aicpu_linker_flags : linker_flags;
+        if (mode_flags)
+            flags = *mode_flags;
+        const auto& extra_flags = aicpu.value_or(false) ? extra_aicpu_linker_flags : extra_linker_flags;
+        flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
         return flags;
     }
 
     void update_hash(hash::FNV1a& hasher) const {
+        if (aicpu.value_or(false))
+            hasher.update("aicpu");
         hasher.update(str::join(get_bisheng_flags()));
         hasher.update(str::join(get_linker_flags()));
     }
@@ -113,14 +153,19 @@ struct CompilerOptions {
 
     [[nodiscard]] json to_json() const {
         return json::object_t {
+            {"aicpu", aicpu},
             {"optimize_level", optimize_level},
             {"arch", arch},
             {"debug_info", debug_info},
             {"dump_asm", dump_asm},
             {"bisheng_flags", bisheng_flags},
             {"linker_flags", linker_flags},
+            {"aicpu_flags", aicpu_flags},
+            {"aicpu_linker_flags", aicpu_linker_flags},
             {"extra_bisheng_flags", extra_bisheng_flags},
             {"extra_linker_flags", extra_linker_flags},
+            {"extra_aicpu_flags", extra_aicpu_flags},
+            {"extra_aicpu_linker_flags", extra_aicpu_linker_flags},
         };
     }
 };
