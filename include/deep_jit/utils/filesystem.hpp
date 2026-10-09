@@ -50,12 +50,18 @@ inline void fsync_dir(const std::filesystem::path& dir_path) {  // NOLINT(*-no-r
     fsync_file(dir_path);
 }
 
-inline void make_dirs(const std::filesystem::path& path) {
+inline void make_dirs(const std::filesystem::path& path, std::optional<int> permission = std::nullopt) {
     // OK if already exists
     std::error_code error_code;
     const bool created = std::filesystem::create_directories(path, error_code);
     if (not (created or error_code.value() == 0))
         DJ_PANIC("failed to create directory: {}", path.string());
+    if (permission) {
+        std::filesystem::permissions(path, static_cast<std::filesystem::perms>(*permission),
+                                     std::filesystem::perm_options::replace, error_code);
+        if (error_code)
+            DJ_PANIC("failed to set permissions: {}: {}", path.string(), error_code.message());
+    }
 }
 
 // Best-effort cache-access bookkeeping. Failure to update an mtime (for
@@ -70,7 +76,8 @@ inline bool try_update_mtime(const std::filesystem::path& path) noexcept {
 
 // Write a file and fsync it: on distributed filesystems `close()` alone does
 // not guarantee that other processes can see the data.
-inline void write_file_sync(const std::filesystem::path& path, const std::string_view& data) {
+// An explicit permission replaces the file mode, independently of umask.
+inline void write_file_sync(const std::filesystem::path& path, const std::string_view& data, std::optional<int> permission = std::nullopt) {
     std::ofstream output(path, std::ios::binary);
     if (not output)
         DJ_PANIC("failed to open for writing: {}", path.string());
@@ -79,6 +86,13 @@ inline void write_file_sync(const std::filesystem::path& path, const std::string
     output.close();
     if (not output)
         DJ_PANIC("failed to close after writing: {}", path.string());
+    if (permission) {
+        std::error_code error;
+        std::filesystem::permissions(path, static_cast<std::filesystem::perms>(*permission),
+                                     std::filesystem::perm_options::replace, error);
+        if (error)
+            DJ_PANIC("failed to set permissions: {}: {}", path.string(), error.message());
+    }
     fsync_file(path);
 }
 
