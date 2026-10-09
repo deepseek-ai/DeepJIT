@@ -41,7 +41,17 @@ Multiple users, processes, and nodes can point to the same cache directory:
 export DJ_JIT_CACHE_DIR=/shared/deep_jit
 ```
 
-Configure directory permissions so participating users can read shared artifacts and writers can create and publish entries under the cache root. As with all DeepJIT caches, use a trusted shared directory. Matching compilation inputs and cache tags allow users to reuse each other's compiled kernels.
+For multi-user access, set the shared cache root's group and SGID bit as shown below. DeepJIT reads SGID once when the cache is initialized. If set, it applies directory permissions `0775` and file permissions `0664`, ignoring umask to prevent access problems. It preserves inherited SGID on directories. Use a trusted group and configure existing directories separately.
+
+Have the administrator run these commands, with `$GROUP` set to a group that includes all participating users:
+
+```bash
+mkdir -p /shared/deep_jit
+chgrp "$GROUP" /shared/deep_jit
+chmod 2775 /shared/deep_jit
+```
+
+Without SGID, normal umask rules apply.
 
 You can also combine a writable personal cache with a shared lookup cache:
 

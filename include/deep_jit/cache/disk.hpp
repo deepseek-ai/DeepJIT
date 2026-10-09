@@ -24,6 +24,8 @@ inline constexpr std::string_view kCommitFileName = ".committed";
 // nothing or a complete entry. Uncommitted temporaries are removed on
 // destruction, including on exception paths.
 class DiskCacheEntry {
+    const bool shared;
+
 public:
     bool hit = false, committed = false;
 
@@ -36,22 +38,19 @@ public:
     DiskCacheEntry(DiskCacheEntry&&) = delete;
     DiskCacheEntry& operator=(DiskCacheEntry&&) = delete;
 
-    DiskCacheEntry(const bool hit, std::filesystem::path path, std::filesystem::path commit_path = {})
-        : hit(hit), path(std::move(path)), commit_path(std::move(commit_path)) {}
+    DiskCacheEntry(const bool hit, std::filesystem::path path, std::filesystem::path commit_path = {}, const bool shared = false)
+        : shared(shared), hit(hit), path(std::move(path)), commit_path(std::move(commit_path)) {}
 
     std::filesystem::path commit() {
         if (hit or committed)
             return path;
 
-        // Mark then fsync the whole tree before publishing
-        // allow the commit file to be read or write by any user
-        write_file_sync(path / kCommitFileName, "", 0666);
-        fsync_dir(path);
+        write_file_sync(path / kCommitFileName, "", shared);
+        fsync_dir(path, shared);
 
         // Atomically rename the temporary directory to the final cache path
         // NOTES: if another rank already created dir_path, rename will fail — that's fine
-        // the parent directory is the `/cache` dir, which should be shared by all users, so we make it 777
-        make_dirs(commit_path.parent_path(), 0777);
+        make_dirs(commit_path.parent_path(), shared);
         std::error_code error_code;
         std::filesystem::rename(path, commit_path, error_code);
         if (error_code) {
@@ -79,11 +78,21 @@ public:
 // Entries live at `<root>/cache/<tag>.<digest>/` and are published with a
 // ".committed" marker; builds go through `<root>/tmp/<uuid>`.
 struct DiskCache {
+private:
+    bool shared = false;
+
+public:
     const std::vector<std::filesystem::path> paths = {};
 
     explicit DiskCache(std::vector<std::filesystem::path> paths)
         : paths(std::move(paths)) {
         DJ_HOST_ASSERT(not this->paths.empty());
+        std::error_code error;
+        const auto status = std::filesystem::status(this->paths[0], error);
+        if (error and error != std::errc::no_such_file_or_directory)
+            DJ_PANIC("failed to get cache root permissions: {}: {}", this->paths[0].string(), error.message());
+        shared = std::filesystem::exists(status) and
+                 (status.permissions() & std::filesystem::perms::set_gid) != std::filesystem::perms::none;
     }
 
     static DiskCache from_env(const Env& env) {
@@ -130,9 +139,9 @@ struct DiskCache {
 
         // Miss, create an empty temporary directory
         const auto temporary_path = paths[0] / "tmp" / get_uuid();
-        // Allow other users to traverse the entry regardless of the creator's umask.
-        make_dirs(temporary_path, 0755);
-        return DiskCacheEntry{false, temporary_path, paths[0] / "cache" / entry_name};
+        make_dirs(temporary_path.parent_path(), shared);
+        make_dirs(temporary_path, shared);
+        return DiskCacheEntry{false, temporary_path, paths[0] / "cache" / entry_name, shared};
     }
 };
 

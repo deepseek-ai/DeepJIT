@@ -38,30 +38,42 @@ inline void fsync_file(const std::filesystem::path& path) {
     }
 }
 
-// Recursively fsync a directory tree, bottom-up: ensures data and directory
-// entries are visible to other processes on distributed filesystems.
-inline void fsync_dir(const std::filesystem::path& dir_path) {  // NOLINT(*-no-recursion)
+// Shared cache access, independent of umask; directories retain inherited SGID.
+inline void set_shared_permissions(const std::filesystem::path& path, const bool directory, const bool shared) {
+    if (not shared)
+        return;
+    const auto sgid = directory ? std::filesystem::status(path).permissions() & std::filesystem::perms::set_gid
+                                : std::filesystem::perms::none;
+    const auto mode = static_cast<std::filesystem::perms>(directory ? 0775 : 0664) | sgid;
+    std::error_code error;
+    std::filesystem::permissions(path, mode, std::filesystem::perm_options::replace, error);
+    if (error)
+        DJ_PANIC("failed to set permissions: {}: {}", path.string(), error.message());
+}
+
+// Apply shared permissions to compiler outputs too, then fsync bottom-up.
+inline void fsync_dir(const std::filesystem::path& dir_path, const bool shared) {  // NOLINT(*-no-recursion)
+    set_shared_permissions(dir_path, true, shared);
     for (const auto& entry : std::filesystem::directory_iterator(dir_path)) {
-        if (entry.is_directory())
-            fsync_dir(entry.path());
-        else if (entry.is_regular_file())
+        const auto status = entry.symlink_status();
+        if (std::filesystem::is_directory(status))
+            fsync_dir(entry.path(), shared);
+        else if (std::filesystem::is_regular_file(status)) {
+            set_shared_permissions(entry.path(), false, shared);
             fsync_file(entry.path());
+        }
     }
     fsync_file(dir_path);
 }
 
-inline void make_dirs(const std::filesystem::path& path, std::optional<int> permission = std::nullopt) {
+inline void make_dirs(const std::filesystem::path& path, const bool shared = false) {
     // OK if already exists
     std::error_code error_code;
     const bool created = std::filesystem::create_directories(path, error_code);
     if (not (created or error_code.value() == 0))
         DJ_PANIC("failed to create directory: {}", path.string());
-    if (permission) {
-        std::filesystem::permissions(path, static_cast<std::filesystem::perms>(*permission),
-                                     std::filesystem::perm_options::replace, error_code);
-        if (error_code)
-            DJ_PANIC("failed to set permissions: {}: {}", path.string(), error_code.message());
-    }
+    if (created)
+        set_shared_permissions(path, true, shared);
 }
 
 // Best-effort cache-access bookkeeping. Failure to update an mtime (for
@@ -76,8 +88,8 @@ inline bool try_update_mtime(const std::filesystem::path& path) noexcept {
 
 // Write a file and fsync it: on distributed filesystems `close()` alone does
 // not guarantee that other processes can see the data.
-// An explicit permission replaces the file mode, independently of umask.
-inline void write_file_sync(const std::filesystem::path& path, const std::string_view& data, std::optional<int> permission = std::nullopt) {
+// Shared cache writes use 0664; other writes retain normal creation permissions.
+inline void write_file_sync(const std::filesystem::path& path, const std::string_view& data, const bool shared = false) {
     std::ofstream output(path, std::ios::binary);
     if (not output)
         DJ_PANIC("failed to open for writing: {}", path.string());
@@ -86,13 +98,7 @@ inline void write_file_sync(const std::filesystem::path& path, const std::string
     output.close();
     if (not output)
         DJ_PANIC("failed to close after writing: {}", path.string());
-    if (permission) {
-        std::error_code error;
-        std::filesystem::permissions(path, static_cast<std::filesystem::perms>(*permission),
-                                     std::filesystem::perm_options::replace, error);
-        if (error)
-            DJ_PANIC("failed to set permissions: {}: {}", path.string(), error.message());
-    }
+    set_shared_permissions(path, false, shared);
     fsync_file(path);
 }
 
