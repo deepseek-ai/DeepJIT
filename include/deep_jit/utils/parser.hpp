@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -66,6 +67,7 @@ public:
     }
 
     std::string parse_includes_into_hash(std::string_view filename) {
+        std::lock_guard lock(mutex_);
         // Check cache
         std::string key(filename);
         if (const auto iterator = cache.find(key); iterator != cache.end())
@@ -103,6 +105,7 @@ public:
     }
 
     std::string parse_into_hash(const std::string& code) {
+        std::lock_guard lock(mutex_);
         // Parse code itself
         hash::FNV1a hash;
         hash.update(code);
@@ -118,6 +121,9 @@ public:
         }
         return hash.get_hex_digest();
     }
+
+private:
+    std::recursive_mutex mutex_;
 };
 
 }  // namespace deep_jit
