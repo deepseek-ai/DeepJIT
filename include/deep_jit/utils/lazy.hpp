@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <dlfcn.h>
 
@@ -12,28 +13,45 @@
 
 namespace deep_jit {
 
+// Concurrent first use initializes one shared object. Copies share the same
+// initialization state, and a factory that throws can be retried by a later
+// call.
 template <typename T>
 class LazyInit {
-    std::shared_ptr<T> ptr;
-    std::function<std::shared_ptr<T>()> factory;
+    struct State {
+        std::once_flag init_once;
+        std::shared_ptr<T> ptr;
+        std::function<std::shared_ptr<T>()> factory;
+
+        State() = default;
+
+        explicit State(std::function<std::shared_ptr<T>()> factory)
+            : factory(std::move(factory)) {}
+    };
+
+    std::shared_ptr<State> state;
 
 public:
-    explicit LazyInit(std::nullptr_t) {}
+    explicit LazyInit(std::nullptr_t)
+        : state(std::make_shared<State>()) {}
 
     explicit LazyInit(std::function<std::shared_ptr<T>()> factory)
-        : factory(std::move(factory)) {}
+        : state(std::make_shared<State>(std::move(factory))) {}
 
     T* operator->() {
-        DJ_HOST_ASSERT(factory != nullptr, "lazy object must be initialized before use");
-        if (ptr == nullptr)
-            ptr = factory();
-        DJ_HOST_ASSERT(ptr != nullptr, "lazy factory must not return nullptr");
-        return ptr.get();
+        return get().get();
     }
 
     std::shared_ptr<T> get() {
-        (void)operator->();
-        return ptr;
+        const auto current = state;
+        DJ_HOST_ASSERT(current != nullptr, "lazy object must be initialized before use");
+        std::call_once(current->init_once, [&] {
+            DJ_HOST_ASSERT(current->factory != nullptr, "lazy object must be initialized before use");
+            auto ptr = current->factory();
+            DJ_HOST_ASSERT(ptr != nullptr, "lazy factory must not return nullptr");
+            current->ptr = std::move(ptr);
+        });
+        return current->ptr;
     }
 };
 
