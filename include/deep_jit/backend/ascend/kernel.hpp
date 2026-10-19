@@ -192,7 +192,8 @@ public:
             attribute.id = ACL_RT_LAUNCH_KERNEL_ATTR_DYN_UBUF_SIZE;
             attribute.value.dynUBufSize = static_cast<uint32_t>(*launch_options.num_ubuf_bytes);
         }
-        if (*launch_options.num_launch_timeout_secs > 0) {
+        // Zero explicitly disables the timeout; it must also reach ACL.
+        {
             auto& attribute = attributes[num_attributes ++];
             attribute.id = ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT;
             attribute.value.timeout = static_cast<uint16_t>(*launch_options.num_launch_timeout_secs);
