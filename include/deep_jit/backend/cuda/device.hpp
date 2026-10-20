@@ -24,6 +24,18 @@ inline void check_cuda_runtime(const cudaError_t error, const char* expression) 
 #define DJ_CUDA_RUNTIME_CHECK(expr) ::deep_jit::cuda::check_cuda_runtime((expr), #expr)
 #endif
 
+// Switches the calling thread to the relaxed stream-capture mode within the scope, so that one-time
+// initialization calls (e.g., `cudaFree(nullptr)`) are permitted while a CUDA graph is being captured
+class RelaxedStreamCaptureModeGuard {
+    cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+
+public:
+    RelaxedStreamCaptureModeGuard() { DJ_CUDA_RUNTIME_CHECK(cudaThreadExchangeStreamCaptureMode(&mode)); }
+    ~RelaxedStreamCaptureModeGuard() { static_cast<void>(cudaThreadExchangeStreamCaptureMode(&mode)); }
+    RelaxedStreamCaptureModeGuard(const RelaxedStreamCaptureModeGuard&) = delete;
+    RelaxedStreamCaptureModeGuard& operator=(const RelaxedStreamCaptureModeGuard&) = delete;
+};
+
 class Device {
     cudaDeviceProp prop{};
     int64_t clock_rate = 0;
@@ -33,6 +45,9 @@ public:
     const cudaDeviceProp& get_prop() {
         if (not initialized) {
             // `cudaFree(nullptr)` is to ensure the current CUDA context exists before later driver API calls
+            // NOTES: it is prohibited during global or thread-local CUDA graph captures, which invalidates the
+            // capture if the first query happens inside one (e.g., the first library call under `torch.cuda.graph`)
+            RelaxedStreamCaptureModeGuard capture_mode_guard;
             int device_index = 0;
             DJ_CUDA_RUNTIME_CHECK(cudaGetDevice(&device_index));
             DJ_CUDA_RUNTIME_CHECK(cudaFree(nullptr));
