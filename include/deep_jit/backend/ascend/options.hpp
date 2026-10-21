@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@ struct CompilerOptions {
             .debug_info = env.get<bool>("JIT_KERNEL_DEBUG_INFO", false),
             .dump_asm = env.get<bool>("JIT_DUMP_ASM", false),
             .bisheng_flags = std::vector<std::string> {
+                std::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
                 "--cce-aicore-only",
                 "-mllvm", "-enable-hiipu-vf-loop-unroll",
                 "-mllvm", "-cce-aicore-dcpreload-args=false",
