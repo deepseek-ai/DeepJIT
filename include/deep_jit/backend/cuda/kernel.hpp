@@ -29,8 +29,9 @@ inline void* kernel_arg_pointer(const T& value) {
     }
 }
 
-// Immutable CUDA kernel handles with shared ownership. Driver resources are
-// unloaded when the last shared owner is destroyed.
+// Immutable CUDA kernel handles with shared ownership. A Kernel is bound to
+// the CUDA context/device active when it was loaded; do not share it across
+// contexts. Driver resources are unloaded when the last shared owner is destroyed.
 class Kernel {
 public:
     CUlibrary library_handle{};
