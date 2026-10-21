@@ -27,13 +27,17 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | **CUDA** | NVCC compiles CUDA source to CUBIN; the CUDA Driver API loads and launches kernels. | CUDA headers 12.4+, NVCC 12.9+, and PyTorch with CUDA support. |
 | **Ascend** | Bisheng and ld.lld compile and link Ascend kernel source; ACL loads and launches kernels. | CANN with `bin/bisheng`, `bin/ld.lld`, and the Ascend `adv_api` headers; ACL and `torch_npu` headers and runtime. |
 
-The host environment must provide Linux, a C++20 compiler and standard library with `std::format` support, and the dependencies for the selected backend. The default GIL support also requires Python and pybind11; consumers that manage the GIL themselves can disable it as described under [Integration](#integration). DeepJIT is intended to be embedded into your extension as a header-only dependency. CUDA consumers should compile with `TORCH_TARGET_VERSION=0x020a000000000000` and `USE_CUDA`; this targets PyTorch's stable ABI with PyTorch 2.10 as the minimum runtime version.
+The host environment must provide Linux (CUDA or Ascend) or native Windows (CUDA only), a C++20 compiler and standard library with `std::format` support, and the dependencies for the selected backend. The default GIL support also requires Python and pybind11; consumers that manage the GIL themselves can disable it as described under [Integration](#integration). DeepJIT is intended to be embedded into your extension as a header-only dependency. CUDA consumers should compile with `TORCH_TARGET_VERSION=0x020a000000000000` and `USE_CUDA`; this targets PyTorch's stable ABI with PyTorch 2.10 as the minimum runtime version.
+
+On Windows, use a CUDA-supported MSVC toolset from a Visual Studio Developer Command Prompt so that `cl.exe` is available to NVCC. Compile the host extension with `/std:c++20 /MD /EHsc /Zc:preprocessor /Zc:__cplusplus` and define `NOMINMAX` and `WIN32_LEAN_AND_MEAN`. The runtime discovers `nvcc.exe` and `cuobjdump.exe` and loads the NVIDIA driver's `nvcuda.dll`. Windows exceptions retain the error message and source location but do not include the Linux-only C++ backtrace.
 
 See [Integration](#integration) for setup, [CUDA](#cuda) for GPU usage, and [Ascend](#ascend) for NPU usage.
 
 ## Shared cache
 
-CUDA and Ascend use the same disk-cache implementation. It supports local and distributed filesystems that provide atomic directory rename within a filesystem and file/directory `fsync`. Builds use unique temporary directories, synchronize their contents, and publish complete entries through an atomic rename. Concurrent processes can compile the same entry and reuse the published result.
+CUDA and Ascend use the same disk-cache implementation. On Linux, it supports local and distributed filesystems that provide atomic directory rename within a filesystem and file/directory `fsync`. Builds use unique temporary directories, synchronize their contents, and publish complete entries through an atomic rename. Concurrent processes can compile the same entry and reuse the published result.
+
+On Windows, use a local cache on a filesystem supporting atomic directory rename, such as NTFS. Files are flushed with `FlushFileBuffers` before publication using `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. Windows has no equivalent of POSIX directory `fsync`, so the Linux distributed-filesystem durability guarantee does not apply. Access is controlled by inherited Windows ACLs; the SGID/umask instructions below apply only to Linux.
 
 Multiple users, processes, and nodes can point to the same cache directory:
 
@@ -60,6 +64,14 @@ export DJ_JIT_CACHE_DIR="$HOME/.dj:/shared/deep_jit"
 ```
 
 DeepJIT searches all roots in order and writes cache misses only to the first root. The shared lookup cache can be read-only. To configure a single consumer library, use its prefix instead, for example `MYLIB_JIT_CACHE_DIR`.
+
+Windows cache lists use semicolons, preserving drive-letter colons. For example, in PowerShell:
+
+```powershell
+$env:DJ_JIT_CACHE_DIR = "$env:USERPROFILE\.dj;D:\Shared Cache\deep_jit"
+```
+
+The default cache is `$HOME/.dj`, falling back to `%USERPROFILE%\.dj` on Windows when `HOME` is unset or empty.
 
 ## Repository layout
 
@@ -167,7 +179,7 @@ Config(std::filesystem::path python_library_root,
 
 Configuration is snapshotted when `Runtime` is constructed. Do not mutate `config`, `backend`, `parser`, `disk_cache`, or `hash_base` afterward. The supported mutable per-runtime settings are `default_compiler_options` and `default_launch_options`.
 
-Compiler, cache, include, and hook paths, as well as free-form compiler flags, are currently passed through a simple shell command and therefore must not contain whitespace or shell metacharacters.
+Compiler, cache, include, and hook paths, as well as free-form compiler flags, are passed through a shell command. On Linux, they must not contain whitespace or shell metacharacters. Windows CUDA paths are quoted and support spaces, including the standard CUDA installation under `Program Files`; paths containing `"`, `%`, `!`, or line breaks are rejected. Free-form compiler flags must still be shell-safe.
 
 ### Registering `get_jit()`
 
@@ -365,9 +377,9 @@ Set JIT environment variables before the first runtime construction (normally be
 
 | Suffix | Default                         | Behavior |
 | --- |---------------------------------| --- |
-| `JIT_CACHE_DIR` | `$HOME/.dj`                     | Cache root, or a colon-separated list. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
+| `JIT_CACHE_DIR` | `$HOME/.dj` (Windows fallback: `%USERPROFILE%\.dj`) | Cache root, or a colon-separated list on Linux / semicolon-separated list on Windows. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
 | `JIT_DEBUG` | `0`                             | Enables compiler-command and load diagnostics. CUDA also enables PTXAS output, line info, and PTX/SASS dumps. |
-| `JIT_NVCC_COMPILER` | `<discovered-toolkit>/bin/nvcc` | Overrides the NVCC executable. |
+| `JIT_NVCC_COMPILER` | `<discovered-toolkit>/bin/nvcc` (`nvcc.exe` on Windows) | Overrides the NVCC executable. |
 | `JIT_CPP_STANDARD` | `20`                            | Selects the C++ standard passed to NVCC as `-std=c++<value>`. |
 | `JIT_KERNEL_DEBUG_INFO` | `0`                             | Adds Bisheng kernel debug information. |
 | `JIT_LAUNCH_TIMEOUT` | `300`                           | Sets the Ascend kernel launch timeout in seconds; `0` disables it. |
@@ -385,14 +397,21 @@ CUDA toolkit and cache discovery also use these standard environment variables:
 
 | Variable | Behavior |
 | --- | --- |
-| `HOME` | Required for the default `$HOME/.dj` cache path. |
+| `HOME` | Used for the default `$HOME/.dj` cache path. Required on Linux. |
+| `USERPROFILE` | Windows default-cache fallback when `HOME` is unset or empty. |
 | `CUDA_HOME` | First CUDA toolkit-root candidate. |
 | `CUDA_PATH` | CUDA toolkit-root fallback when `CUDA_HOME` is unset or empty. |
-| `PATH` | Used by `which nvcc` when neither CUDA root variable identifies a toolkit. |
+| `PATH` | Used by `which nvcc` on Linux or `where.exe nvcc.exe` on Windows when neither CUDA root variable identifies a toolkit. The first Windows match is used. |
 
-If both CUDA root variables are unset or empty and `which nvcc` fails, DeepJIT tries `/usr/local/cuda`. A non-empty but invalid `CUDA_HOME` or `CUDA_PATH` is treated as an error rather than skipped.
+On Linux, if both CUDA root variables are unset or empty and `which nvcc` fails, DeepJIT tries `/usr/local/cuda`. Windows has no fixed toolkit-root fallback. A non-empty but invalid `CUDA_HOME` or `CUDA_PATH` is treated as an error rather than skipped.
 
-`JIT_NVCC_COMPILER` overrides the executable after CUDA-home discovery. A valid CUDA root must still be discoverable through `CUDA_HOME`, `CUDA_PATH`, `PATH`, or `/usr/local/cuda`. SASS dumping additionally requires an executable `cuobjdump` under that discovered toolkit root.
+`JIT_NVCC_COMPILER` overrides the executable after CUDA-home discovery. A valid CUDA root must still be discoverable through `CUDA_HOME`, `CUDA_PATH`, `PATH`, or `/usr/local/cuda` (Linux only). SASS dumping additionally requires an executable `cuobjdump` (`cuobjdump.exe` on Windows) under that discovered toolkit root.
+
+### Platform regression tests
+
+`python tests/test_platform.py` builds and runs the host utility/cache tests without PyTorch or a GPU. On Windows, run it from a Visual Studio Developer Command Prompt; on Linux, a C++20 compiler and the elfutils development headers are required. Set `CXX` to override the host compiler.
+
+On Windows, setting `DEEP_JIT_TEST_CUDA=1` additionally checks CUDA headers and a pybind11 consumer, and compiles a kernel through NVCC, including PTX output, a Python post-hook, and cache publication with paths containing spaces. SASS coverage runs when the optional `cuobjdump.exe` is installed. This requires CUDA 12.9+ and PyTorch 2.10+ headers, but no GPU. The existing `tests/test_cuda.py` suite exercises GPU integration on Linux and includes Linux-specific fork/process-group tests.
 
 ## Ascend
 

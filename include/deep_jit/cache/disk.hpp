@@ -52,8 +52,16 @@ public:
         // NOTES: if another rank already created dir_path, rename will fail — that's fine
         make_dirs(commit_path.parent_path(), shared);
         std::error_code error_code;
+#if defined(_WIN32)
+        if (not ::MoveFileExW(path.c_str(), commit_path.c_str(), MOVEFILE_WRITE_THROUGH))
+            error_code = std::error_code(::GetLastError(), std::system_category());
+#else
         std::filesystem::rename(path, commit_path, error_code);
+#endif
         if (error_code) {
+            std::error_code lookup_error;
+            if (not std::filesystem::is_regular_file(commit_path / kCommitFileName, lookup_error))
+                DJ_PANIC("failed to publish cache entry: {}: {}", commit_path.string(), error_code.message());
             // Another rank beat us, then clean up our dir and use the existing one
             // NOTES: avoid `std::filesystem::remove_all` here — it can segfault on
             // distributed filesystems, when concurrent processes operate
@@ -96,13 +104,17 @@ public:
     }
 
     static DiskCache from_env(const Env& env) {
-        // Parse PATH_1:PATH_2:PATH_3 into a writable cache root followed by
+        // Parse a platform-separated list into a writable cache root followed by
         // zero or more read-only lookup roots.
         std::vector<std::filesystem::path> paths;
         if (const auto env_opt = env.get<std::string>("JIT_CACHE_DIR")) {
             size_t begin = 0;
             while (true) {
+#if defined(_WIN32)
+                const auto end = env_opt->find(';', begin);
+#else
                 const auto end = env_opt->find(':', begin);
+#endif
                 const auto item = env_opt->substr(begin, end - begin);
                 DJ_HOST_ASSERT(not item.empty(), "disk cache path list contains an empty path: {}", env_opt.value());
                 paths.emplace_back(item);
@@ -111,8 +123,14 @@ public:
                 begin = end + 1;
             }
         } else {
-            const auto home = get_env<std::string>("HOME");
+            auto home = get_env<std::string>("HOME");
+#if defined(_WIN32)
+            if (home.empty())
+                home = get_env<std::string>("USERPROFILE");
+            DJ_HOST_ASSERT(not home.empty(), "HOME or USERPROFILE environment variable must not be empty");
+#else
             DJ_HOST_ASSERT(not home.empty(), "HOME environment variable must not be empty");
+#endif
             paths.emplace_back(std::filesystem::path(home) / ".dj");
         }
 

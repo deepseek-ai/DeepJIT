@@ -9,7 +9,12 @@
 #include <string_view>
 #include <system_error>
 #include <fcntl.h>
+#if defined(_WIN32)
+#include <io.h>
+#include <deep_jit/utils/windows.hpp>
+#else
 #include <unistd.h>
+#endif
 
 #include <deep_jit/utils/exception.hpp>
 
@@ -22,6 +27,24 @@ inline std::string read(const std::filesystem::path& path) {
 }
 
 inline void fsync_file(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    const auto handle = ::CreateFileW(
+        path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const std::error_code error(::GetLastError(), std::system_category());
+        DJ_PANIC("failed to open for fsync: {}: {}", path.string(), error.message());
+    }
+    if (not ::FlushFileBuffers(handle)) {
+        const std::error_code error(::GetLastError(), std::system_category());
+        ::CloseHandle(handle);
+        DJ_PANIC("failed to fsync: {}: {}", path.string(), error.message());
+    }
+    if (not ::CloseHandle(handle)) {
+        const std::error_code error(::GetLastError(), std::system_category());
+        DJ_PANIC("failed to close after fsync: {}: {}", path.string(), error.message());
+    }
+#else
     const auto fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         const std::error_code error(errno, std::generic_category());
@@ -36,6 +59,7 @@ inline void fsync_file(const std::filesystem::path& path) {
         const std::error_code error(errno, std::generic_category());
         DJ_PANIC("failed to close after fsync: {}: {}", path.string(), error.message());
     }
+#endif
 }
 
 // Shared cache access, independent of umask; directories retain inherited SGID.
@@ -63,7 +87,10 @@ inline void fsync_dir(const std::filesystem::path& dir_path, const bool shared) 
             fsync_file(entry.path());
         }
     }
+    // Windows cannot flush directory handles; publication uses a write-through rename.
+#if !defined(_WIN32)
     fsync_file(dir_path);
+#endif
 }
 
 inline void make_dirs(const std::filesystem::path& path, const bool shared = false) {
@@ -134,7 +161,12 @@ inline std::optional<std::filesystem::path> normalize_path(const std::optional<s
 }
 
 inline bool is_executable(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    // Windows has no POSIX execute bit; the command runner reports launch failures.
+    return std::filesystem::is_regular_file(path) and ::_waccess(path.c_str(), 4) == 0;
+#else
     return std::filesystem::is_regular_file(path) and ::access(path.c_str(), X_OK) == 0;
+#endif
 }
 
 }  // namespace deep_jit

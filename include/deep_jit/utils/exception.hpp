@@ -1,22 +1,25 @@
 #pragma once
 
+#if !defined(_WIN32)
 #include <elfutils/libdwfl.h>
+#include <cxxabi.h>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
-#include <cxxabi.h>
-#include <dlfcn.h>
 #include <exception>
-#include <execinfo.h>
 #include <format>
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 
 namespace deep_jit::exception {
 
+#if !defined(_WIN32)
 namespace detail {
 
 struct DwflApi {
@@ -158,18 +161,26 @@ inline __attribute__((noinline)) std::string get_backtrace() {
 }
 
 } // namespace detail
+#endif
 
 class Exception final : public std::exception {
 public:
     std::string message = {};
 
-    explicit __attribute__((noinline)) Exception(
+#if defined(_MSC_VER)
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    explicit Exception(
         const char *name, const char* file, const int line, const std::string& error) {
         message = std::string(name) + " error (" + file + ":" + std::to_string(line) + "): " + error;
+#if !defined(_WIN32)
         // use `-g1` compile option to enable line number information in backtrace
         const auto trace = detail::get_backtrace<2>();
         if (not trace.empty())
             message += "\nC++ trace (most recent call first):\n" + trace;
+#endif
     }
 
     const char *what() const noexcept override {
