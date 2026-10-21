@@ -195,6 +195,10 @@ Calling `get_jit()` initializes the lazy runtime if it has not already been init
 
 The CUDA backend requires CUDA headers 12.4 or newer and NVCC 12.9 or newer. It uses NVCC to generate a CUBIN. Loading through `compile()` requires exactly one CUDA kernel; `compile_without_load()` only builds the artifact and does not perform that check.
 
+### CUDA context affinity
+
+A `Runtime<deep_jit::CUDA>`, its cached `Kernel` objects, and the CUDA function handles they own are context-affine. Construct and use one runtime within one CUDA context/device; do not share it across contexts or heterogeneous devices. The on-disk CUBIN remains reusable: construct a separate runtime in each context/device, while keeping the same cache directory if the architecture matches.
+
 ### Compile and launch
 
 ```cpp
