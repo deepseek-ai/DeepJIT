@@ -295,7 +295,7 @@ The CUDA cache digest is built, in order, from:
 
 1. `Config::extra_signature`.
 2. The hash of the complete `nvcc --version` output.
-3. The effective compiler flags returned by `CompilerOptions::get_flags()`. Paths in `Config::include_dirs` are intentionally excluded, while any `-I...` placed directly in `nvcc_flags` or `extra_nvcc_flags` remains part of the digest.
+3. The effective compiler flags returned by `CompilerOptions::get_flags()`, followed by markers for enabled `check_no_spills` and `check_no_local_memory` policies. The markers prevent a strict request from reusing an artifact compiled with warning-only flags. Keys with both checks disabled are unchanged. Paths in `Config::include_dirs` are intentionally excluded, while any `-I...` placed directly in `nvcc_flags` or `extra_nvcc_flags` remains part of the digest.
 4. The selected `post_hook` path and file-content hash.
 5. The parser digest of the source and its tracked include tree.
 

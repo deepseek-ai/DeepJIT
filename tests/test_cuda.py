@@ -649,6 +649,7 @@ def validate_artifacts(cache_root):
         'no_kernel': 1,
         'post_hook': 2,
         'runtime_launch_features': 1,
+        'strict_compiler_options': 1,
         'template_add': 2,
         'tensor_map_argument': 1,
     }), artifacts
@@ -740,6 +741,12 @@ def validate_artifacts(cache_root):
     command = compiler_options_metadata['command'].split()
     for flag in ('-O0', '--compiler-options=-O0', '--use_fast_math', '--generate-line-info', '-DTEST_OPTION=17'):
         assert flag in command, compiler_options_metadata
+
+    strict_artifact = next(
+        artifact for artifact in artifacts if artifact.name.startswith('strict_compiler_options.'))
+    strict_options = metadata_by_artifact[strict_artifact]['compiler_options']
+    assert strict_options['check_no_spills'] is True, strict_options
+    assert strict_options['check_no_local_memory'] is True, strict_options
 
     dump_artifact = next(artifact for artifact in artifacts if artifact.name.startswith('launch_overhead.'))
     dump_options = metadata_by_artifact[dump_artifact]['compiler_options']
