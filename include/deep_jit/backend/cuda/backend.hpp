@@ -172,7 +172,14 @@ public:
     }
 
     static Toolkit find_cuda_toolkit(const Env& env) {
+        std::filesystem::path nvcc;
         std::filesystem::path home_path;
+
+        // Find NVCC compiler override if explicitly configured
+        if (const auto path = env.get<std::string>("JIT_NVCC_COMPILER"); path and not path->empty()) {
+            nvcc = std::filesystem::absolute(*path).lexically_normal();
+            DJ_HOST_ASSERT(is_executable(nvcc), "NVCC compiler is not executable: {}", nvcc.string());
+        }
 
         // Find CUDA home
         // 1. `CUDA_HOME` or `CUDA_PATH`
@@ -182,7 +189,7 @@ public:
         }
 
         // 2. `which nvcc`
-        if (home_path.empty()) {
+        if (home_path.empty() and nvcc.empty()) {
             try {
                 auto path = call_external_command("which nvcc");
                 while (not path.empty() and (path.back() == '\r' or path.back() == '\n'))
@@ -193,26 +200,31 @@ public:
         }
 
         // 3. /usr/local/cuda
-        if (home_path.empty() and std::filesystem::exists("/usr/local/cuda"))
+        if (home_path.empty() and nvcc.empty() and std::filesystem::exists("/usr/local/cuda"))
             home_path = "/usr/local/cuda";
 
-        // Canonicalize
-        DJ_HOST_ASSERT(not home_path.empty() and std::filesystem::exists(home_path));
-        home_path = std::filesystem::absolute(home_path).lexically_normal();
-
-        // Find NVCC
-        std::filesystem::path nvcc;
-        if (const auto path = env.get<std::string>("JIT_NVCC_COMPILER"); path and not path->empty()) {
-            nvcc = std::filesystem::absolute(*path).lexically_normal();
-        } else {
+        // Canonicalize home_path or derive from nvcc if override provided
+        if (nvcc.empty()) {
+            DJ_HOST_ASSERT(not home_path.empty() and std::filesystem::exists(home_path));
+            home_path = std::filesystem::absolute(home_path).lexically_normal();
             nvcc = home_path / "bin/nvcc";
+            DJ_HOST_ASSERT(is_executable(nvcc), "NVCC compiler is not executable: {}", nvcc.string());
+        } else if (not home_path.empty() and std::filesystem::exists(home_path)) {
+            home_path = std::filesystem::absolute(home_path).lexically_normal();
+        } else {
+            home_path = nvcc.parent_path().parent_path();
         }
-        DJ_HOST_ASSERT(is_executable(nvcc), "NVCC compiler is not executable: {}", nvcc.string());
 
         // Try to find `cuobjdump`
-        const auto cuobjdump_path = home_path / "bin/cuobjdump";
-        std::optional<std::filesystem::path> cuobjdump =
-            is_executable(cuobjdump_path) ? std::optional(cuobjdump_path) : std::nullopt;
+        std::optional<std::filesystem::path> cuobjdump;
+        const auto adjacent_cuobjdump = nvcc.parent_path() / "cuobjdump";
+        if (is_executable(adjacent_cuobjdump)) {
+            cuobjdump = adjacent_cuobjdump;
+        } else if (not home_path.empty()) {
+            const auto home_cuobjdump = home_path / "bin/cuobjdump";
+            if (is_executable(home_cuobjdump))
+                cuobjdump = home_cuobjdump;
+        }
         return {.nvcc = std::move(nvcc), .cuobjdump = std::move(cuobjdump)};
     }
 };

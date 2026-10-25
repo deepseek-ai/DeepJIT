@@ -1319,6 +1319,22 @@ void test_cuda_toolkit_discovery(const fs::path& cache_root) {
     set_env("CUDA_HOME", (cache_root / "missing_cuda_home").string());
     expect_failure([&] { deep_jit::CUDA::find_cuda_toolkit(env); }, "not home_path.empty()");
 
+    // NVCC override succeeds even when CUDA_HOME and PATH are empty/invalid
+    unset_env("CUDA_HOME");
+    unset_env("CUDA_PATH");
+    const auto empty_path_override = cache_root / "empty_path_override";
+    deep_jit::make_dirs(empty_path_override);
+    set_env("PATH", empty_path_override.string());
+    set_env("DJ_JIT_NVCC_COMPILER", (toolkit_b / "bin/nvcc").string());
+    DJ_HOST_ASSERT(deep_jit::CUDA::find_cuda_toolkit(env).nvcc == toolkit_b / "bin/nvcc",
+                   "NVCC override must succeed even when CUDA_HOME is not set");
+
+    // cuobjdump adjacent to overridden NVCC is detected
+    write_executable(toolkit_b / "bin/cuobjdump", "#!/bin/sh\nexit 0\n");
+    DJ_HOST_ASSERT(deep_jit::CUDA::find_cuda_toolkit(env).cuobjdump == toolkit_b / "bin/cuobjdump",
+                   "cuobjdump adjacent to overridden NVCC was not found");
+    unset_env("DJ_JIT_NVCC_COMPILER");
+
     restore_env("CUDA_HOME", saved_cuda_home);
     restore_env("CUDA_PATH", saved_cuda_path);
     restore_env("PATH", saved_path);
