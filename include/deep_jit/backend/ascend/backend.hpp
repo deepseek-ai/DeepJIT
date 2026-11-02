@@ -56,6 +56,7 @@ public:
 
     Toolkit toolkit;
     CompilerInfo compiler_info;
+    std::shared_ptr<ascend::AicpuBootstrap> aicpu_bootstrap;
 
     explicit Ascend(const Env&)
         : toolkit(find_ascend_toolkit()),
@@ -149,8 +150,13 @@ public:
         write_file_sync(dir / "meta.json", metadata.dump());
     }
 
-    [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
-        return Kernel::load(dir, env);
+    [[nodiscard]] std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
+        // Release GIL to let other Python threads run since booting AICPU bootstrap takes some time
+        [[maybe_unused]] GilScopedRelease gil_release;
+        // Initialize bootstrap at the first AICPU kernel load
+        if (aicpu_bootstrap == nullptr and std::filesystem::is_regular_file(dir / "kernel.aicpu.so"))
+            aicpu_bootstrap = std::make_shared<ascend::AicpuBootstrap>(toolkit.bisheng.parent_path().parent_path());
+        return Kernel::load(dir, env, aicpu_bootstrap);
     }
 
     static Toolkit find_ascend_toolkit() {

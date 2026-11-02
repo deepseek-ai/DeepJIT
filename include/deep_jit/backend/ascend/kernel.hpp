@@ -16,10 +16,12 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 
+#include <deep_jit/backend/ascend/aicpu/bootstrap.hpp>
 #include <deep_jit/backend/ascend/driver.hpp>
 #include <deep_jit/backend/ascend/options.hpp>
 #include <deep_jit/utils/env.hpp>
@@ -41,7 +43,9 @@ constexpr size_t align_kernel_arg(const size_t offset) {
 // unloaded when the last shared owner is destroyed.
 class Kernel {
     bool aicpu = false;
-    std::string binary_data;
+    // Lazy initialization on loading the first AICPU kernel
+    uint64_t aicpu_module = 0;
+    std::shared_ptr<AicpuBootstrap> aicpu_bootstrap;
 
 public:
     aclrtBinHandle binary_handle{};
@@ -170,7 +174,8 @@ public:
         return kernel_names;
     }
 
-    static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
+    static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env,
+                                        std::shared_ptr<AicpuBootstrap> bootstrap = nullptr) {
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
@@ -196,16 +201,10 @@ public:
         auto kernel = std::make_shared<Kernel>();
         kernel->aicpu = is_aicpu;
         if (is_aicpu) {
-            kernel->binary_data = read(binary_path);
-            aclrtBinaryLoadOption option{};
-            option.type = ACL_RT_BINARY_LOAD_OPT_CPU_KERNEL_MODE;
-            option.value.cpuKernelMode = 2;  // Load AICPU .so from host memory.
-            aclrtBinaryLoadOptions options{&option, 1};
-            DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromData(
-                kernel->binary_data.data(), kernel->binary_data.size(), &options, &kernel->binary_handle));
-            const auto interface_name = kernel_names.front() + "_interface";
-            DJ_ACL_CHECK(driver::lazy_aclrtRegisterCpuFunc(
-                kernel->binary_handle, interface_name.c_str(), kernel_names.front().c_str(), &kernel->kernel_handle));
+            DJ_HOST_ASSERT(bootstrap != nullptr, "AICPU kernels require an Ascend backend bootstrap");
+            kernel->aicpu_module = bootstrap->load(binary_path, kernel_names.front() + "_interface");
+            kernel->kernel_handle = bootstrap->function();
+            kernel->aicpu_bootstrap = std::move(bootstrap);
         } else {
             DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromFile(binary_path.c_str(), nullptr, &kernel->binary_handle));
             DJ_ACL_CHECK(driver::lazy_aclrtBinaryGetFunction(
@@ -227,12 +226,12 @@ public:
 
         // Checks
         DJ_HOST_ASSERT(kernel_handle != nullptr, "kernel must be loaded before launch");
-        DJ_HOST_ASSERT(launch_options.num_blocks.has_value() and *launch_options.num_blocks > 0,
-                       "Ascend block count must be positive");
-        DJ_HOST_ASSERT(launch_options.num_ubuf_bytes.has_value() and *launch_options.num_ubuf_bytes >= 0,
-                       "Ascend dynamic UB size must not be negative");
-        DJ_HOST_ASSERT(not aicpu or *launch_options.num_ubuf_bytes == 0,
-                       "AICPU kernels do not support dynamic UB");
+        if (not aicpu) {
+            DJ_HOST_ASSERT(launch_options.num_blocks.has_value() and *launch_options.num_blocks > 0,
+                           "Ascend block count must be positive");
+            DJ_HOST_ASSERT(launch_options.num_ubuf_bytes.has_value() and *launch_options.num_ubuf_bytes >= 0,
+                           "Ascend dynamic UB size must not be negative");
+        }
         DJ_HOST_ASSERT(launch_options.num_launch_timeout_secs.has_value() and
                        *launch_options.num_launch_timeout_secs >= 0 and
                        *launch_options.num_launch_timeout_secs <= std::numeric_limits<uint16_t>::max(),
@@ -254,7 +253,7 @@ public:
         // Set launch attributes
         std::array<aclrtLaunchKernelAttr, 2> attributes{};
         size_t num_attributes = 0;
-        if (*launch_options.num_ubuf_bytes > 0) {
+        if (not aicpu and *launch_options.num_ubuf_bytes > 0) {
             auto& attribute = attributes[num_attributes ++];
             attribute.id = ACL_RT_LAUNCH_KERNEL_ATTR_DYN_UBUF_SIZE;
             attribute.value.dynUBufSize = static_cast<uint32_t>(*launch_options.num_ubuf_bytes);
@@ -277,9 +276,18 @@ public:
         const aclrtStream stream = launch_options.stream
             ? *launch_options.stream
             : c10_npu::getCurrentNPUStream();
-        DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
-            kernel_handle, *launch_options.num_blocks, stream, config_ptr,
-            parameter_buffer.data(), parameter_size, nullptr, 0));
+        if (aicpu) {
+            const aicpu::Request request{.operation = aicpu::Operation::Invoke, .module = aicpu_module};
+            alignas(aicpu::Request) std::array<uint8_t, sizeof(request) + parameter_size> packet{};
+            std::memcpy(packet.data(), &request, sizeof(request));
+            std::memcpy(packet.data() + sizeof(request), parameter_buffer.data(), parameter_size);
+            DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
+                kernel_handle, 1, stream, config_ptr, packet.data(), packet.size(), nullptr, 0));
+        } else {
+            DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
+                kernel_handle, *launch_options.num_blocks, stream, config_ptr,
+                parameter_buffer.data(), parameter_size, nullptr, 0));
+        }
 
         // Launch blocking
         if (get_env<bool>("ASCEND_LAUNCH_BLOCKING", false))
@@ -287,16 +295,19 @@ public:
     }
 
     void unload() noexcept {
-        if (binary_handle == nullptr)
-            return;
-
         try {
-            DJ_ACL_CHECK(driver::lazy_aclrtBinaryUnLoad(binary_handle));
+            // Release GIL to let other Python threads run since unloading AICPU bootstrap takes some time
+            [[maybe_unused]] GilScopedRelease gil_release;
+            if (aicpu_module != 0)
+                aicpu_bootstrap->unload(aicpu_module);
+            else if (binary_handle != nullptr)
+                DJ_ACL_CHECK(driver::lazy_aclrtBinaryUnLoad(binary_handle));
         } catch (...) {
         }
         binary_handle = nullptr;
         kernel_handle = nullptr;
-        binary_data.clear();
+        aicpu_module = 0;
+        aicpu_bootstrap.reset();
     }
 };
 
