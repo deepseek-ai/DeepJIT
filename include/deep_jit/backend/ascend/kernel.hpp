@@ -43,13 +43,13 @@ constexpr size_t align_kernel_arg(const size_t offset) {
 // unloaded when the last shared owner is destroyed.
 class Kernel {
     bool aicpu = false;
-    // Lazy initialization on loading the first AICPU kernel
+    // Opaque handle to a loaded module in the AICPU scheduler process.
     uint64_t aicpu_module = 0;
     std::shared_ptr<AicpuBootstrap> aicpu_bootstrap;
 
 public:
     aclrtBinHandle binary_handle{};
-    // For AICPU kernel, it points to the loader handle that returns kernel module after executing LOAD request
+    // ACL launch handle: the custom kernel for AICore, or the loader for AICPU.
     aclrtFuncHandle kernel_handle{};
 
     Kernel() = default;
@@ -297,7 +297,7 @@ public:
 
     void unload() noexcept {
         try {
-            // Release GIL to let other Python threads run since unloading AICPU bootstrap takes some time
+            // Release the GIL while synchronizing the device and unloading the kernel.
             [[maybe_unused]] GilScopedRelease gil_release;
             if (aicpu_module != 0)
                 aicpu_bootstrap->unload(aicpu_module);

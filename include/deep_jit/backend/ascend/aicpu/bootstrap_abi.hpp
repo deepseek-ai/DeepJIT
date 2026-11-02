@@ -36,6 +36,7 @@ struct LoaderResult {
     char message[256]{};
 };
 
+// Ensure the same layouts on host and device
 static_assert(sizeof(RequestHeader) == 16);
 static_assert(sizeof(LoaderRequest) == 176);
 static_assert(sizeof(LoaderResult) == 272);

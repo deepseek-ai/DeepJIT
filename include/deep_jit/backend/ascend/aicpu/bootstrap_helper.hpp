@@ -4,6 +4,7 @@
 
 namespace deep_jit::ascend::aicpu {
 
+// Host helper that builds and deploys the loader with a private CANN package configuration.
 inline constexpr std::string_view helper_source = R"DJPY(
 import ctypes
 import hashlib
@@ -40,6 +41,7 @@ def main():
     digest = hashlib.sha256((stage / library).read_bytes()).hexdigest()
     (stage / 'bin_hash.cfg').write_text(f'{library}={digest}\n')
 
+    # Reuse the installed toolkit while keeping package and operator configs private.
     overlay(cann, shadow, {'conf', 'opp', 'build'})
     overlay(cann / 'conf', shadow / 'conf', {'ascend_package_load.ini', 'bootstrap.json'})
     overlay(cann / 'opp', shadow / 'opp', {'vendors'})
@@ -61,7 +63,7 @@ def main():
     os.environ.update(ASCEND_HOME_PATH=str(shadow), ASCEND_LATEST_INSTALL_PATH=str(shadow),
                       ASCEND_AICPU_PATH=str(shadow))
     acl = ctypes.CDLL(str(cann / 'lib64/libascendcl.so'))
-    # Key: aclrtSetDevice() triggers CANN to deploy the loader in the device filesystem
+    # aclrtSetDevice deploys the package; its files remain after this helper exits.
     for function, arguments in [('aclInit', [None]), ('aclrtSetDevice', [device]),
                                 ('aclrtResetDevice', [device]), ('aclFinalize', [])]:
         status = getattr(acl, function)(*arguments)

@@ -27,8 +27,8 @@ extern char** environ;
 
 namespace deep_jit::ascend::aicpu {
 
-// Represents an mmaped AICPU kernel image on the host, and the registered region on the device,
-// so that AICPU knows where to load and execute the kernel.
+// Map the Host .so image for the AICPU scheduler process to read during Load.
+// The mapping is released after Load. Invocations execute the loaded device code.
 class KernelImage {
     void* host = nullptr;
     void* device = nullptr;
@@ -86,9 +86,8 @@ public:
     size_t size() const { return length; }
 };
 
-// Build and deploy the loader library through a helper process.
-// To allow mode-0 loading of the loader in the future, we must spawn
-// a new process with the package config and initialize the device.
+// Build the loader and deploy its library to the device filesystem.
+// A fresh helper process selects the private package before initializing CANN.
 inline void deploy_loader(const std::filesystem::path& cann, const std::filesystem::path& directory, const int device) {
     write_file_sync(directory / "abi.hpp", abi_source);
     write_file_sync(directory / "loader.cpp", device_source);
@@ -126,10 +125,9 @@ inline void deploy_loader(const std::filesystem::path& cann, const std::filesyst
 namespace deep_jit::ascend {
 
 // One bootstrap per Runtime, created on the first AICPU load.
-// It loads the loader onto the AICPU scheduler process with the help of Python helper
-// and obtain its handle in the current context. Future JIT load/launch requests will
-// use this handle to load/unload/invoke AICPU kernels. Since such AICPU kernels run
-// in the scheduler process, they can operate raw resources like jetty ABIs.
+// Deploys the loader library and registers its ACL entry in the current context.
+// The application's AICPU scheduler process loads the library on first dispatch
+// and handles one request per launch. JIT kernels can access that process's Jetty mappings.
 class AicpuBootstrap {
     std::filesystem::path directory_;
     aclrtBinHandle binary_handle = nullptr;
@@ -190,9 +188,8 @@ public:
         try {
             DJ_ACL_CHECK(driver::lazy_aclrtCreateStream(&loader_stream));
             DJ_ACL_CHECK(driver::lazy_aclrtMalloc(&result_buffer, sizeof(aicpu::LoaderResult), ACL_MEM_MALLOC_HUGE_FIRST));
-            // Key to the workaround: Deploy loader onto the device
             aicpu::deploy_loader(cann, directory_, device);
-            // Since the loader is deployed, we can use mode 0 to load it and get its handle
+            // We can use mode 0 to register the deployed library's entry
             const auto config = directory_ / "shadow/conf/bootstrap.json";
             aclrtBinaryLoadOption option{};
             option.type = ACL_RT_BINARY_LOAD_OPT_CPU_KERNEL_MODE;
@@ -216,9 +213,9 @@ public:
         attribute.id = ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT;
         attribute.value.timeout = 30;
         aclrtLaunchKernelCfg config{&attribute, 1};
-        // An ACL failure prevents reuse (excluding errors reported by the loader itself through LoaderResult)
+        // ACL failures disable reuse; errors reported in LoaderResult do not.
         loader_healthy = false;
-        // Launch a short-lived loader kernel on AICPU to execute the request
+        // Launch the loader once to handle this request.
         DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
             loader_handle, 1, loader_stream, &config, &request, sizeof(request), nullptr, 0));
         DJ_ACL_CHECK(driver::lazy_aclrtSynchronizeStream(loader_stream));

@@ -4,7 +4,7 @@
 
 namespace deep_jit::ascend::aicpu {
 
-// Embedded sources keep consumers independent of the DeepJIT installation at runtime.
+// Device loader executed by the AICPU scheduler process to load, invoke and unload JIT kernels.
 inline constexpr std::string_view device_source = R"DJCPP(
 #include "abi.hpp"
 
@@ -72,12 +72,14 @@ void remove_bootstrap() {
     const char* name = std::strrchr(info.dli_fname, '/');
     if (name == nullptr or std::strncmp(name + 1, "libdeep_jit_aicpu_", 17) != 0)
         throw std::runtime_error("unexpected AICPU bootstrap path");
+    // Unlink the deployed file; the scheduler process can keep executing its mapped code.
     if (unlink(info.dli_fname) != 0 and errno != ENOENT)
         throw std::runtime_error("cannot remove AICPU bootstrap");
 }
 
 void publish(abi::LoaderResult* output, const abi::LoaderResult& result) {
     *output = result;
+    // Clean the result's cache lines before the Host copies it from device memory.
     uint64_t ctr;
     asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
     const uintptr_t line = 4ull << ((ctr >> 16) & 15);
@@ -126,7 +128,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t deep_jit_aicpu_loader
         std::snprintf(result.message, sizeof(result.message), "unknown AICPU loader error");
     }
     publish(reinterpret_cast<abi::LoaderResult*>(request.result), result);
-    return 0;  // Report load failures without poisoning the ACL stream.
+    return 0;  // Report loader errors through LoaderResult without failing the ACL task.
 }
 )DJCPP";
 
