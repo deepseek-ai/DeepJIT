@@ -311,6 +311,7 @@ static void test_root_timeouts(const fs::path& root, const fs::path& primary_pat
             root_fault = fault;
             for (int i = 0; i < 3; ++i)
                 assert(not primary(request(std::to_string(fault) + ":" + std::to_string(i)).string()));
+            assert(fs::is_empty(root / "primary/tmp")); // non-timeout failures clean up temporary directories
             root_fault = 0;
             assert(primary(request("healthy" + std::to_string(fault)).string()));
         }

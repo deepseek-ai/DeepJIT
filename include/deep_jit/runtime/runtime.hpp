@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <deep_jit/cache/disk.hpp>
@@ -103,8 +104,9 @@ private:
                 else
                     return entry.path;
             } catch (const std::exception& error) {
-                // Background IO or compiler processes may still be using this directory.
-                entry.abandoned = true;
+                // Only timed-out IO or timed-out commands can still be using this directory.
+                entry.abandoned = dynamic_cast<const IOTimeoutError*>(&error) != nullptr or
+                                  std::string_view(error.what()).find("command timed out") != std::string_view::npos;
                 disk_cache.report_error(entry.root_index, error);
                 first_root = entry.root_index + 1;
                 if (first_root == disk_cache.paths.size()) throw;
