@@ -402,7 +402,6 @@ jit->launch(kernel, {.num_blocks = num_blocks}, output, input, count);
 ```
 
 An unset stream uses the current torch_npu stream. `num_blocks` is required. `num_ubuf_bytes` controls dynamic UB size, and `num_launch_timeout_secs` defaults to `JIT_LAUNCH_TIMEOUT`.
-
 When `ASCEND_LAUNCH_BLOCKING` is enabled, DeepJIT synchronizes the device after every launch.
 
 `deep_jit::ascend::CompilerOptions` supports the optimization level, `dav-*` architecture, debug information, assembly dumping, and replace/append lists for Bisheng and linker flags. The defaults are `-O2`, `--cce-aicore-only`, VF loop unrolling, and `ld.lld -m aicorelinux -Ttext 0 --no-mmap-output-file`. `<toolkit>/aarch64-linux/asc/include/adv_api` is required and added automatically.
@@ -417,9 +416,9 @@ For AICPU kernels, use the same `Runtime<Ascend>` with `.aicpu = true`:
 
 ```cpp
 const auto kernel = jit->compile("store", source, {.aicpu = true});
-jit->launch(kernel, {.num_blocks = 1}, output, value);
+jit->launch(kernel, {}, output, value);
 ```
 
-The source must define one `__aicpu__ __global__` kernel returning `unsigned int`. AICPU uses `aicpu_flags` / `aicpu_linker_flags` from `CompilerOptions::default_options()`, ignores `arch`, and requires zero dynamic UB. Loading and launch select the AICPU path automatically. Validated on Ascend 950 with CANN 9.2.
+The source must define one `__aicpu__ __global__` kernel returning `unsigned int`. AICPU uses `aicpu_flags` / `aicpu_linker_flags` from `CompilerOptions::default_options()` and ignores `arch`, `num_blocks`, and `num_ubuf_bytes`. Stream, timeout, and launch-blocking options still apply. The first AICPU load of each Runtime takes some time to set up device resources for future AICPU kernels.
 
 Append AICPU compiler/linker options with `extra_aicpu_flags` / `extra_aicpu_linker_flags`; `extra_bisheng_flags` / `extra_linker_flags` apply only to AICore. Runtime defaults and per-compile extra flags are concatenated in that order.

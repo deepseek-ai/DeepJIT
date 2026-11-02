@@ -49,6 +49,7 @@ class Kernel {
 
 public:
     aclrtBinHandle binary_handle{};
+    // For AICPU kernel, it points to the loader handle that returns kernel module after executing LOAD request
     aclrtFuncHandle kernel_handle{};
 
     Kernel() = default;
@@ -203,7 +204,7 @@ public:
         if (is_aicpu) {
             DJ_HOST_ASSERT(bootstrap != nullptr, "AICPU kernels require an Ascend backend bootstrap");
             kernel->aicpu_module = bootstrap->load(binary_path, kernel_names.front() + "_interface");
-            kernel->kernel_handle = bootstrap->function();
+            kernel->kernel_handle = bootstrap->get_loader_handle();
             kernel->aicpu_bootstrap = std::move(bootstrap);
         } else {
             DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromFile(binary_path.c_str(), nullptr, &kernel->binary_handle));
@@ -277,10 +278,10 @@ public:
             ? *launch_options.stream
             : c10_npu::getCurrentNPUStream();
         if (aicpu) {
-            const aicpu::Request request{.operation = aicpu::Operation::Invoke, .module = aicpu_module};
-            alignas(aicpu::Request) std::array<uint8_t, sizeof(request) + parameter_size> packet{};
-            std::memcpy(packet.data(), &request, sizeof(request));
-            std::memcpy(packet.data() + sizeof(request), parameter_buffer.data(), parameter_size);
+            const aicpu::RequestHeader header{.operation = aicpu::Operation::Invoke, .module = aicpu_module};
+            alignas(aicpu::RequestHeader) std::array<uint8_t, sizeof(header) + parameter_size> packet{};
+            std::memcpy(packet.data(), &header, sizeof(header));
+            std::memcpy(packet.data() + sizeof(header), parameter_buffer.data(), parameter_size);
             DJ_ACL_CHECK(driver::lazy_aclrtLaunchKernelWithHostArgs(
                 kernel_handle, 1, stream, config_ptr, packet.data(), packet.size(), nullptr, 0));
         } else {
