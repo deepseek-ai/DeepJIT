@@ -146,8 +146,15 @@ void test_run_in_iothread() {
     assert(deep_jit::run_in_iothread([] { return 7; }) == 7);
 }
 
-int main(int argc, char**) {
+int main(int argc, char** argv) {
     if (argc > 1) {
+        if (std::string_view(argv[1]) == "disable-fallback") {
+            const auto caller = std::this_thread::get_id();
+            assert(deep_jit::detail::disable_cache_fallback());
+            assert(deep_jit::run_in_iothread([] { return std::this_thread::get_id(); }) == caller);
+            assert(not deep_jit::detail::in_iothread);
+            return 0;
+        }
         // The process must exit without joining this permanently blocked worker.
         std::promise<void> release;
         auto gate = release.get_future().share();

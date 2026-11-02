@@ -15,6 +15,9 @@ def test_executor():
         ], check=True, timeout=60)
         subprocess.run([executable], check=True, timeout=30)
         subprocess.run([executable, 'stuck-worker'], check=True, timeout=5)
+        subprocess.run([executable, 'disable-fallback'],
+                       env={**os.environ, 'DJ_DISABLE_CACHE_FALLBACK': '1'},
+                       check=True, timeout=5)
 
 
 if __name__ == '__main__':

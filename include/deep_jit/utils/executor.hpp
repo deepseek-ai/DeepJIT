@@ -165,13 +165,27 @@ inline std::chrono::milliseconds io_timeout() {
     return timeout;
 }
 
+inline bool disable_cache_fallback() {
+    static const bool disabled = [] {
+        int value = 0;
+        if (const char* raw = std::getenv("DJ_DISABLE_CACHE_FALLBACK")) {
+            const auto end = raw + std::strlen(raw);
+            const auto [ptr, error] = std::from_chars(raw, end, value);
+            if (error != std::errc{} or ptr != end)
+                throw std::invalid_argument("invalid DJ_DISABLE_CACHE_FALLBACK");
+        }
+        return value != 0;
+    }();
+    return disabled;
+}
+
 } // namespace detail
 
 // Own captures: a timed-out operation may outlive its caller. Nested calls
 // execute directly on the worker under the outer operation's timeout.
 template<typename F>
 auto run_in_iothread(F&& f) -> std::invoke_result_t<std::decay_t<F>&> {
-    if (detail::in_iothread)
+    if (detail::in_iothread or detail::disable_cache_fallback())
         return std::invoke(f);
     return detail::io_executor().run(std::forward<F>(f), detail::io_timeout());
 }

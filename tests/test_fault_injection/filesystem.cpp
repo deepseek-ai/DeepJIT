@@ -382,6 +382,35 @@ int main(int argc, char** argv) {
     const auto primary_path = root / "primary/cache" / ("kernel." + key);
     const auto secondary_path = root / "secondary/cache" / ("kernel." + key);
 
+    if (scenario == "disable_fallback") {
+        assert(::setenv("DJ_DISABLE_CACHE_FALLBACK", "1", 1) == 0);
+        assert(detail::disable_cache_fallback());
+        const auto caller = std::this_thread::get_id();
+        assert(run_in_iothread([] { return std::this_thread::get_id(); }) == caller);
+
+        // Normal build and secondary lookup hit work inline without starting a worker.
+        auto built = runtime.compile("kernel", "healthy_source");
+        assert(built->data == binary and primary(built->path.string()));
+        seed(secondary_path);
+        runtime.mem_cache.cache.clear();
+        auto hit = runtime.compile("kernel", "source");
+        assert(hit->data == binary and hit->path == secondary_path);
+        fs::remove_all(secondary_path);
+
+        // Lookup, write, and compile errors fail immediately without falling back.
+        armed = true;
+        for (const int fault : {3, 4}) {
+            root_fault = fault;
+            runtime.mem_cache.cache.clear();
+            bool failed = false;
+            try { runtime.compile("kernel", "fail_" + std::to_string(fault)); }
+            catch (const std::exception&) { failed = true; }
+            assert(failed);
+        }
+        assert(not fs::exists(root / "secondary/cache") or fs::is_empty(root / "secondary/cache"));
+        std::cout << "PASS: disable_fallback runs inline and does not fall back across roots\n";
+        return 0;
+    }
     if (scenario.starts_with("root_")) {
         test_root_timeouts(root, primary_path);
         return 0;

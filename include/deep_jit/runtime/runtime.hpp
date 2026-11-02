@@ -104,6 +104,8 @@ private:
                 else
                     return entry.path;
             } catch (const std::exception& error) {
+                if (detail::disable_cache_fallback())
+                    throw;
                 // Only timed-out IO or timed-out commands can still be using this directory.
                 entry.abandoned = dynamic_cast<const IOTimeoutError*>(&error) != nullptr or
                                   std::string_view(error.what()).find("command timed out") != std::string_view::npos;

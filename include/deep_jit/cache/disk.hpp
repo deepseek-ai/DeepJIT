@@ -151,6 +151,8 @@ public:
                 if (hit)
                     return DiskCacheEntry{true, path, {}, false, i};
             } catch (const std::exception& error) {
+                if (detail::disable_cache_fallback())
+                    throw;
                 failed.push_back(i);
                 report_error(i, error);
             }
@@ -174,6 +176,8 @@ public:
                 });
                 return DiskCacheEntry{false, temporary_path, paths[i] / "cache" / entry_name, shared, i};
             } catch (const std::exception& error) {
+                if (detail::disable_cache_fallback())
+                    throw;
                 report_error(i, error);
             }
         }

@@ -12,6 +12,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 FILESYSTEM_CASES = [
+    'disable_fallback',
     'root_read_timeouts', 'root_commit_timeouts', 'root_other_errors', 'root_all_disabled',
     'root_queue_wait', 'root_concurrent_reports', 'root_write_timeouts',
     'short_write_retried',
