@@ -61,6 +61,7 @@ def main():
     os.environ.update(ASCEND_HOME_PATH=str(shadow), ASCEND_LATEST_INSTALL_PATH=str(shadow),
                       ASCEND_AICPU_PATH=str(shadow))
     acl = ctypes.CDLL(str(cann / 'lib64/libascendcl.so'))
+    # Key: aclrtSetDevice() triggers CANN to deploy the loader in the device filesystem
     for function, arguments in [('aclInit', [None]), ('aclrtSetDevice', [device]),
                                 ('aclrtResetDevice', [device]), ('aclFinalize', [])]:
         status = getattr(acl, function)(*arguments)

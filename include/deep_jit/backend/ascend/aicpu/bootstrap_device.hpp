@@ -34,7 +34,7 @@ struct Module {
     }
 };
 
-uint64_t load(const abi::ControlRequest& request) {
+uint64_t load(const abi::LoaderRequest& request) {
     auto module = std::make_unique<Module>();
     // Keep the fd until dlclose: reusing a live /proc/self/fd/N path can make
     // the dynamic linker return a different JIT variant's library.
@@ -76,7 +76,7 @@ void remove_bootstrap() {
         throw std::runtime_error("cannot remove AICPU bootstrap");
 }
 
-void publish(abi::Result* output, const abi::Result& result) {
+void publish(abi::LoaderResult* output, const abi::LoaderResult& result) {
     *output = result;
     uint64_t ctr;
     asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
@@ -89,7 +89,7 @@ void publish(abi::Result* output, const abi::Result& result) {
 }  // namespace
 
 extern "C" __attribute__((visibility("default"))) uint32_t deep_jit_aicpu_loader_v1(void* raw) {
-    const auto& header = *static_cast<const abi::Request*>(raw);
+    const auto& header = *static_cast<const abi::RequestHeader*>(raw);
     // The module pointer stays valid until the Host drains queued invocations
     // and submits Unload. Invoke needs no registry lookup, lock or allocation.
     if (header.operation == abi::Operation::Invoke) {
@@ -101,8 +101,8 @@ extern "C" __attribute__((visibility("default"))) uint32_t deep_jit_aicpu_loader
         }
     }
 
-    const auto& request = *static_cast<const abi::ControlRequest*>(raw);
-    abi::Result result{};
+    const auto& request = *static_cast<const abi::LoaderRequest*>(raw);
+    abi::LoaderResult result{};
     try {
         switch (header.operation) {
             case abi::Operation::Load:
@@ -125,7 +125,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t deep_jit_aicpu_loader
         result.status = 1;
         std::snprintf(result.message, sizeof(result.message), "unknown AICPU loader error");
     }
-    publish(reinterpret_cast<abi::Result*>(request.result), result);
+    publish(reinterpret_cast<abi::LoaderResult*>(request.result), result);
     return 0;  // Report load failures without poisoning the ACL stream.
 }
 )DJCPP";

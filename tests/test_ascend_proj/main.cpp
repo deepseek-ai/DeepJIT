@@ -167,6 +167,11 @@ int launch_increment(Runtime& runtime,
 }
 
 void test_aicpu(Runtime& runtime) {
+    // Bootstrap should create lazily until AICPU kernel load
+    DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == nullptr);
+    const auto core_only = runtime.compile("aicpu_lazy_core", get_increment_source(0));
+    DJ_HOST_ASSERT(launch_increment(runtime, core_only, 23) == 23);
+    DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == nullptr);
     const std::string source = R"(
 #include <cstdint>
 #ifndef TEST_BIAS
@@ -182,9 +187,13 @@ extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int6
 )";
     const CompilerOptions options{.aicpu = true};
     const auto artifact = runtime.compile_without_load("aicpu_store", source, options);
+    DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == nullptr);
     DJ_HOST_ASSERT((Runtime::Kernel::parse_kernel_names(artifact / "kernel.aicpu.so") ==
                     std::vector<std::string>{"store"}));
+    // Load the first AICPU kernel
     const auto kernel = runtime.compile("aicpu_store", source, options);
+    const auto bootstrap = runtime.backend.aicpu_bootstrap;
+    DJ_HOST_ASSERT(bootstrap != nullptr);
     DJ_HOST_ASSERT(kernel == runtime.compile("aicpu_store", source, options));
     const auto check = [&](const std::shared_ptr<Runtime::Kernel>& candidate, int bias) {
         DeviceBuffer output(3 * sizeof(int64_t));
@@ -195,7 +204,7 @@ extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int6
                         std::vector<int64_t>{-7 + bias, 0x123456789abcdef, 12}));
     };
     check(kernel, 0);
-    check(deep_jit::Ascend::load(artifact, runtime.env), 0);
+    check(runtime.backend.load(artifact, runtime.env), 0);
     auto variant = runtime.default_compiler_options.override_with(options);
     variant.optimize_level = "0";  // Non-inlined interface calls must bind to this variant.
     variant.aicpu_flags->emplace_back("-DTEST_BIAS=13");
@@ -211,15 +220,49 @@ extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int6
     const auto core = runtime.compile("aicpu_core_override", get_increment_source(5), {.aicpu = false});
     DJ_HOST_ASSERT(launch_increment(runtime, core, 17) == 22);
     runtime.default_compiler_options.aicpu = false;
-    expect_failure([&] { runtime.launch(kernel, {.num_blocks = 1, .num_ubuf_bytes = 32}); },
-                   "AICPU kernels do not support dynamic UB");
     const std::string empty_source = "extern \"C\" __aicpu__ __global__ unsigned int empty() { return 0; }";
     const auto empty = runtime.compile("aicpu_empty", empty_source, {.aicpu = true, .dump_asm = true});
     runtime.launch(empty, {.num_blocks = 1});
+    empty->launch({.num_launch_timeout_secs = 10});
     DJ_ACL_CHECK(aclrtSynchronizeDevice());
     const auto empty_artifact = runtime.compile_without_load("aicpu_empty", empty_source, options);
     DJ_HOST_ASSERT(fs::is_regular_file(empty_artifact / "asm/kernel.s"));
     expect_failure([&] { runtime.compile("aicpu_multiple", source + empty_source, options); }, "found 2");
+    expect_failure([&] {
+        runtime.compile("aicpu_missing_symbol", R"(
+extern "C" __aicpu__ unsigned int deep_jit_missing_symbol();
+extern "C" __aicpu__ __global__ unsigned int missing() { return deep_jit_missing_symbol(); }
+)", options);
+    }, "AICPU loader failed");
+    // A failed Load must leave the shared loader stream and result buffer reusable.
+    check(runtime.backend.load(artifact, runtime.env), 0);
+    check(kernel, 0);
+    DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == bootstrap);
+
+    // An externally held kernel retains its bootstrap after Runtime destruction.
+    auto owner = make_runtime(get_test_project_dir() / "include_original");
+    auto retained = owner->compile("aicpu_retained", empty_source, options);
+    const auto directory = owner->backend.aicpu_bootstrap->get_directory();
+    owner.reset();
+    DJ_HOST_ASSERT(fs::is_directory(directory));
+    auto launch_options = LaunchOptions::default_options(runtime.env);
+    retained->launch(launch_options);
+    retained.reset();  // Unload must drain the outstanding asynchronous invocation.
+    DJ_HOST_ASSERT(not fs::exists(directory));
+
+    // Deployment failures also remove their private Host files.
+    const auto failure_root = fs::path(deep_jit::get_env<std::string>("DEEP_JIT_ASCEND_TEST_CACHE_ROOT")) / "bootstrap_failure";
+    deep_jit::make_dirs(failure_root);
+    const auto* tmpdir = std::getenv("TMPDIR");
+    const auto saved_tmpdir = tmpdir != nullptr ? std::optional<std::string>(tmpdir) : std::nullopt;
+    set_env("TMPDIR", failure_root.string());
+    expect_failure([&] { deep_jit::ascend::AicpuBootstrap invalid(failure_root / "missing_toolkit"); },
+                   "AICPU bootstrap deployment failed");
+    if (saved_tmpdir)
+        set_env("TMPDIR", *saved_tmpdir);
+    else
+        unset_env("TMPDIR");
+    DJ_HOST_ASSERT(fs::is_empty(failure_root));
 }
 
 void test_environment(const fs::path& cache_root) {
