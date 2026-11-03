@@ -82,15 +82,17 @@ public:
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
-        // Paths
-        dir = std::filesystem::absolute(dir).lexically_normal();
-        const auto source_path = dir / "kernel.cu";
-        const auto cubin_path = dir / "kernel.cubin";
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_compiler_command = debug or env.get<bool>("JIT_PRINT_COMPILER_COMMAND", false);
 
-        // Write source code
-        write_file_sync(source_path, source);
+        // Prepare inputs in one IO task. Own captures in case the task times out.
+        dir = run_in_iothread([dir, source] {
+            const auto path = std::filesystem::absolute(dir).lexically_normal();
+            write_file_sync(path / "kernel.cu", source);
+            return path;
+        });
+        const auto source_path = dir / "kernel.cu";
+        const auto cubin_path = dir / "kernel.cubin";
 
         // Build the full command
         std::vector<std::string> args = {
@@ -125,9 +127,6 @@ public:
                        not std::regex_search(compiler_output, std::regex(R"(local\s+memory\s+used)", std::regex::icase)),
                        "PTXAS reported local memory usage:\n{}",
                        compiler_output);
-        DJ_HOST_ASSERT(std::filesystem::is_regular_file(cubin_path) and std::filesystem::file_size(cubin_path) != 0,
-                       "NVCC did not produce a valid CUBIN: {}",
-                       cubin_path.string());
 
         // Run post hook
         if (options.post_hook) {
@@ -143,28 +142,37 @@ public:
             auto ptx_args = args;
             ptx_args[2] = "--ptx", ptx_args[4] = ptx_path.string();
             call_external_command(cd_command + str::join(ptx_args), print_compiler_command);
-            DJ_HOST_ASSERT(std::filesystem::is_regular_file(ptx_path) and std::filesystem::file_size(ptx_path) != 0,
-                           "NVCC did not produce a valid PTX: {}", ptx_path.string());
         }
 
         // Dump SASS
+        std::string sass;
         if (options.dump_sass.value_or(false)) {
             DJ_HOST_ASSERT(toolkit.cuobjdump.has_value());
-            const auto sass_path = dir / "kernel.sass";
             const auto sass_command = toolkit.cuobjdump->string() + " --dump-sass " + cubin_path.string();
-            const auto sass = call_external_command(cd_command + sass_command, print_compiler_command);
+            sass = call_external_command(cd_command + sass_command, print_compiler_command);
             DJ_HOST_ASSERT(not sass.empty(), "cuobjdump did not produce valid SASS for {}", cubin_path.string());
-            write_file_sync(sass_path, sass);
         }
 
-        // Write metadata
+        // Validate outputs and finish writes in one IO task.
         const json metadata = json::object_t {
             {"command", command},
             {"config", config.to_json()},
             {"compiler_info", compiler_info.to_json()},
             {"compiler_options", options.to_json()},
         };
-        write_file_sync(dir / "meta.json", metadata.dump());
+        run_in_iothread([dir, cubin_path, dump_ptx = options.dump_ptx.value_or(false),
+                         sass = std::move(sass), data = metadata.dump()] {
+            DJ_HOST_ASSERT(std::filesystem::is_regular_file(cubin_path) and std::filesystem::file_size(cubin_path) != 0,
+                           "NVCC did not produce a valid CUBIN: {}", cubin_path.string());
+            if (dump_ptx) {
+                const auto ptx_path = dir / "kernel.ptx";
+                DJ_HOST_ASSERT(std::filesystem::is_regular_file(ptx_path) and std::filesystem::file_size(ptx_path) != 0,
+                               "NVCC did not produce a valid PTX: {}", ptx_path.string());
+            }
+            if (not sass.empty())
+                write_file_sync(dir / "kernel.sass", sass);
+            write_file_sync(dir / "meta.json", data);
+        });
     }
 
     [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {

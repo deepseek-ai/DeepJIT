@@ -19,7 +19,7 @@ DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuFuncSetAttribute);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLaunchKernelEx);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuStreamBatchMemOp);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuTensorMapEncodeTiled);
-DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLibraryLoadFromFile)
+DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLibraryLoadData)
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLibraryUnload)
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLibraryGetKernelCount)
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuLibraryEnumerateKernels)

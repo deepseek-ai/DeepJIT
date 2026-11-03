@@ -10,7 +10,7 @@ namespace deep_jit::ascend::driver {
 DJ_DECL_LAZY_DL_HANDLE(get_acl_handle, "libascendcl.so");
 
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclGetRecentErrMsg);
-DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryLoadFromFile);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryLoadFromData);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryUnLoad);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryGetFunction);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtLaunchKernelWithHostArgs);

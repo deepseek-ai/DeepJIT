@@ -21,6 +21,19 @@ inline std::string read(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+// Read the declared file length, and reject short reads and trailing data.
+inline std::string read_bytes(const std::filesystem::path& path) {
+    const auto size = std::filesystem::file_size(path);
+    std::ifstream input(path, std::ios::binary);
+    std::string data(size, '\0');
+    input.read(data.data(), static_cast<std::streamsize>(size));
+    DJ_HOST_ASSERT(input and input.gcount() == static_cast<std::streamsize>(size),
+                   "incomplete file read: {}", path.string());
+    DJ_HOST_ASSERT(input.peek() == std::char_traits<char>::eof() and not input.bad(),
+                   "file changed during read: {}", path.string());
+    return data;
+}
+
 inline void fsync_file(const std::filesystem::path& path) {
     const auto fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
