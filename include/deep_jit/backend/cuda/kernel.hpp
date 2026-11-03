@@ -14,6 +14,8 @@
 #include <deep_jit/backend/cuda/options.hpp>
 #include <deep_jit/backend/cuda/stable_torch_utils.h>
 #include <deep_jit/utils/env.hpp>
+#include <deep_jit/utils/executor.hpp>
+#include <deep_jit/utils/filesystem.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/gil.hpp>
 #include <deep_jit/utils/no_ref_ptr.hpp>
@@ -49,23 +51,26 @@ public:
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
-        // Check existence
         const auto cubin_path = dir / "kernel.cubin";
-        if (not std::filesystem::is_regular_file(cubin_path))
-            DJ_PANIC("missing CUDA CUBIN: {}", cubin_path.string());
 
         // Record start time
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_load_time = debug or env.get<bool>("JIT_PRINT_LOAD_TIME", false);
         if (debug)
             std::fputs(std::format("Loading CUBIN: {}\n", cubin_path.string()).c_str(), stdout);
-        const auto start_time = std::chrono::steady_clock::now();
+        const auto start_time = print_load_time ? std::chrono::steady_clock::now()
+                                                : std::chrono::steady_clock::time_point{};
+        auto data = run_in_iothread([cubin_path] {
+            DJ_HOST_ASSERT(std::filesystem::is_regular_file(cubin_path),
+                           "missing CUDA CUBIN: {}", cubin_path.string());
+            return read_bytes(cubin_path);
+        });
 
         // Load kernel
         CUlibrary library_handle{};
         CUfunction kernel_handle{};
-        DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLibraryLoadFromFile(
-            &library_handle, cubin_path.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
+        DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLibraryLoadData(
+            &library_handle, data.data(), nullptr, nullptr, 0, nullptr, nullptr, 0));
         try {
             unsigned int num_kernels = 0;
             DJ_CUDA_DRIVER_CHECK(driver::lazy_cuLibraryGetKernelCount(&num_kernels, library_handle));

@@ -41,7 +41,17 @@ Multiple users, processes, and nodes can point to the same cache directory:
 export DJ_JIT_CACHE_DIR=/shared/deep_jit
 ```
 
-Configure directory permissions so participating users can read shared artifacts and writers can create and publish entries under the cache root. As with all DeepJIT caches, use a trusted shared directory. Matching compilation inputs and cache tags allow users to reuse each other's compiled kernels.
+For multi-user access, set the shared cache root's group and SGID bit as shown below. DeepJIT reads the selected root's SGID bit when creating a cache entry. If set, it applies directory permissions `0775` and file permissions `0664`, ignoring umask to prevent access problems. It preserves inherited SGID on directories. Use a trusted group and configure existing directories separately.
+
+Have the administrator run these commands, with `$GROUP` set to a group that includes all participating users:
+
+```bash
+mkdir -p /shared/deep_jit
+chgrp "$GROUP" /shared/deep_jit
+chmod 2775 /shared/deep_jit
+```
+
+Without SGID, normal umask rules apply.
 
 You can also combine a writable personal cache with a shared lookup cache:
 
@@ -49,7 +59,9 @@ You can also combine a writable personal cache with a shared lookup cache:
 export DJ_JIT_CACHE_DIR="$HOME/.dj:/shared/deep_jit"
 ```
 
-DeepJIT searches all roots in order and writes cache misses only to the first root. The shared lookup cache can be read-only. To configure a single consumer library, use its prefix instead, for example `MYLIB_JIT_CACHE_DIR`.
+DeepJIT searches all roots in order and writes cache misses to the first usable root. If lookup, writing, publication, compilation, or loading fails, it logs the error and tries the next root. Later roots also serve as write fallbacks; a read-only root can still supply cache hits. To configure a single consumer library, use its prefix instead, for example `MYLIB_JIT_CACHE_DIR`.
+
+Cache filesystem operations run on an I/O worker with a separate timeout for each operation. Set `DJ_FS_TIMEOUT_MS` to change the default 10000 ms timeout; `0` disables it. Set `DJ_DISABLE_CACHE_FALLBACK=1` (default `0`) to run cache I/O directly on the calling thread without starting an I/O worker or falling back across cache roots. Both values are read once on first use. Queueing time and compiler subprocess execution are excluded. Compiler subprocesses use `posix_spawn` with a 5-minute default timeout and receive `SIGKILL` on timeout without blocking on reap. A timed-out worker is detached, and subsequent operations use a new worker. After three I/O timeouts, a root is skipped for the lifetime of that runtime. Timed-out operations leave their temporary directories in place because background I/O or compiler processes can still be using them. If every root fails, the request raises an error; existing in-memory cache hits remain usable.
 
 ## Repository layout
 
@@ -355,7 +367,7 @@ Set JIT environment variables before the first runtime construction (normally be
 
 | Suffix | Default                         | Behavior |
 | --- |---------------------------------| --- |
-| `JIT_CACHE_DIR` | `$HOME/.dj`                     | Cache root, or a colon-separated list. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
+| `JIT_CACHE_DIR` | `$HOME/.dj`                     | Cache root, or a colon-separated list. Roots are searched in order and later roots serve as write fallbacks on failure. Empty values or empty list elements are rejected. |
 | `JIT_DEBUG` | `0`                             | Enables compiler-command and load diagnostics. CUDA also enables PTXAS output, line info, and PTX/SASS dumps. |
 | `JIT_NVCC_COMPILER` | `<discovered-toolkit>/bin/nvcc` | Overrides the NVCC executable. |
 | `JIT_CPP_STANDARD` | `20`                            | Selects the C++ standard passed to NVCC as `-std=c++<value>`. |
