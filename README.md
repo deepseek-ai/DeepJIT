@@ -45,7 +45,7 @@ Multiple users, processes, and nodes can point to the same cache directory:
 export DJ_JIT_CACHE_DIR=/shared/deep_jit
 ```
 
-For multi-user access, set the shared cache root's group and SGID bit as shown below. DeepJIT reads SGID once when the cache is initialized. If set, it applies directory permissions `0775` and file permissions `0664`, ignoring umask to prevent access problems. It preserves inherited SGID on directories. Use a trusted group and configure existing directories separately.
+For multi-user access, set the shared cache root's group and SGID bit as shown below. DeepJIT reads the selected root's SGID bit when creating a cache entry. If set, it applies directory permissions `0775` and file permissions `0664`, ignoring umask to prevent access problems. It preserves inherited SGID on directories. Use a trusted group and configure existing directories separately.
 
 Have the administrator run these commands, with `$GROUP` set to a group that includes all participating users:
 
@@ -63,7 +63,9 @@ You can also combine a writable personal cache with a shared lookup cache:
 export DJ_JIT_CACHE_DIR="$HOME/.dj:/shared/deep_jit"
 ```
 
-DeepJIT searches all roots in order and writes cache misses only to the first root. The shared lookup cache can be read-only. To configure a single consumer library, use its prefix instead, for example `MYLIB_JIT_CACHE_DIR`.
+DeepJIT searches all roots in order and writes cache misses to the first usable root. If lookup, writing, publication, compilation, or loading fails, it logs the error and tries the next root. Later roots also serve as write fallbacks; a read-only root can still supply cache hits. To configure a single consumer library, use its prefix instead, for example `MYLIB_JIT_CACHE_DIR`.
+
+Cache filesystem operations run on an I/O worker with a separate timeout for each operation. Set `DJ_FS_TIMEOUT_MS` to change the default 10000 ms timeout; `0` disables it. Set `DJ_DISABLE_CACHE_FALLBACK=1` (default `0`) to run cache I/O directly on the calling thread without starting an I/O worker or falling back across cache roots. Both values are read once on first use. Queueing time and compiler subprocess execution are excluded. Compiler subprocesses have a 5-minute default timeout. On Linux they use `posix_spawn` and receive `SIGKILL` on timeout without blocking on reap. On Windows they run through `cmd.exe` with `CreateProcess` in a job object, which terminates the command and its descendants on timeout. A timed-out worker is detached, and subsequent operations use a new worker. After three I/O timeouts, a root is skipped for the lifetime of that runtime. Timed-out operations leave their temporary directories in place because background I/O or compiler processes can still be using them. If every root fails, the request raises an error; existing in-memory cache hits remain usable.
 
 Windows cache lists use semicolons, preserving drive-letter colons. For example, in PowerShell:
 
@@ -377,7 +379,7 @@ Set JIT environment variables before the first runtime construction (normally be
 
 | Suffix | Default                         | Behavior |
 | --- |---------------------------------| --- |
-| `JIT_CACHE_DIR` | `$HOME/.dj` (Windows fallback: `%USERPROFILE%\.dj`) | Cache root, or a colon-separated list on Linux / semicolon-separated list on Windows. All roots are searched in order; misses are compiled into the first root. Empty values or empty list elements are rejected. |
+| `JIT_CACHE_DIR` | `$HOME/.dj` (Windows fallback: `%USERPROFILE%\.dj`) | Cache root, or a colon-separated list on Linux / semicolon-separated list on Windows. Roots are searched in order and later roots serve as write fallbacks on failure. Empty values or empty list elements are rejected. |
 | `JIT_DEBUG` | `0`                             | Enables compiler-command and load diagnostics. CUDA also enables PTXAS output, line info, and PTX/SASS dumps. |
 | `JIT_NVCC_COMPILER` | `<discovered-toolkit>/bin/nvcc` (`nvcc.exe` on Windows) | Overrides the NVCC executable. |
 | `JIT_CPP_STANDARD` | `20`                            | Selects the C++ standard passed to NVCC as `-std=c++<value>`. |
@@ -410,6 +412,8 @@ On Linux, if both CUDA root variables are unset or empty and `which nvcc` fails,
 ### Platform regression tests
 
 `python tests/test_platform.py` builds and runs the host utility/cache tests without PyTorch or a GPU. On Windows, run it from a Visual Studio Developer Command Prompt; on Linux, a C++20 compiler and the elfutils development headers are required. Set `CXX` to override the host compiler.
+
+`python tests/test_executor.py` checks the I/O worker's timeout, recovery, and shutdown behavior on either platform. The syscall fault-injection suite, `python tests/test_fault_injection`, is Linux-only.
 
 On Windows, setting `DEEP_JIT_TEST_CUDA=1` additionally checks CUDA headers and a pybind11 consumer, and compiles a kernel through NVCC, including PTX output, a Python post-hook, and cache publication with paths containing spaces. SASS coverage runs when the optional `cuobjdump.exe` is installed. This requires CUDA 12.9+ and PyTorch 2.10+ headers, but no GPU. The existing `tests/test_cuda.py` suite exercises GPU integration on Linux and includes Linux-specific fork/process-group tests.
 

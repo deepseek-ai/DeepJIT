@@ -52,7 +52,9 @@ void test_filesystem(const fs::path& root) {
     const std::string contents("binary\0data\n", 12);
     write_file_sync(file, contents);
     DJ_HOST_ASSERT(read(file) == contents);
+    DJ_HOST_ASSERT(read_bytes(file) == contents);
     write_file_sync(directory / "empty", "");
+    DJ_HOST_ASSERT(read_bytes(directory / "empty").empty());
     fsync_dir(root, false);
     DJ_HOST_ASSERT(try_update_mtime(file));
     DJ_HOST_ASSERT(not try_update_mtime(root / "missing"));
@@ -109,6 +111,19 @@ void test_cache(const fs::path& root) {
     DJ_HOST_ASSERT(not fs::exists(failed_temporary));
 }
 
+void test_cache_fallback(const fs::path& root) {
+    const auto blocked = root / "not a directory";
+    write_file_sync(blocked, "file");
+    DiskCache cache({blocked, root / "fallback"});
+    auto entry = cache.entry("test", "fallback");
+    DJ_HOST_ASSERT(not entry.hit and entry.root_index == 1);
+    write_file_sync(entry.path / "result", "fallback");
+    const auto published = entry.commit();
+    DJ_HOST_ASSERT(read_bytes(published / "result") == "fallback");
+    auto hit = cache.entry("test", "fallback");
+    DJ_HOST_ASSERT(hit.hit and hit.root_index == 1 and hit.path == published);
+}
+
 void cache_worker(const fs::path& root) {
     DiskCache cache({root / "cache"});
     auto entry = cache.entry("test", "concurrent");
@@ -141,6 +156,40 @@ void test_command(const fs::path& root, const fs::path& executable) {
     expect_error([&] { call_external_command(child + " child-failure"); }, "exit code 23");
     expect_error([&] { call_external_command(child + " child-failure"); }, "child failure");
     expect_error([] { call_external_command(""); }, "command must not be empty");
+    expect_error([&] { call_external_command(child, false, std::chrono::milliseconds(-1)); },
+                 "command timeout must not be negative");
+    DJ_HOST_ASSERT(call_external_command(child + " child-large-output") ==
+                   std::string(128 * 1024, 'x') + std::string("a\0b", 3));
+    DJ_HOST_ASSERT(call_external_command(child + " child-delay", false, std::chrono::milliseconds(0)) == "done\n");
+    const auto timeout_child =
+#if defined(_WIN32)
+        child;
+#else
+        "exec " + child;
+#endif
+    for (const auto* mode : {"child-sleep", "child-closed-output", "child-active-output"}) {
+        const auto start = std::chrono::steady_clock::now();
+        expect_error([&] { call_external_command(timeout_child + " " + mode, false, std::chrono::milliseconds(150)); },
+                     "command timed out after 150 ms");
+        DJ_HOST_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(3));
+    }
+#if defined(_WIN32)
+    const auto pid_file = root / "child.pid";
+    expect_error([&] {
+        call_external_command(child + " child-sleep " + quote_command_path(pid_file),
+                              false, std::chrono::seconds(1));
+    }, "command timed out after 1000 ms");
+    const auto pid = static_cast<DWORD>(std::stoul(read(pid_file)));
+    const auto process = ::OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (process != nullptr) {
+        const auto status = ::WaitForSingleObject(process, 1000);
+        ::CloseHandle(process);
+        DJ_HOST_ASSERT(status == WAIT_OBJECT_0, "timed-out command left its child running");
+    } else {
+        DJ_HOST_ASSERT(::GetLastError() == ERROR_INVALID_PARAMETER, "failed to inspect timed-out child");
+    }
+#endif
+    DJ_HOST_ASSERT(call_external_command(child + " child-delay") == "done\n");
 #if !defined(_WIN32)
     expect_error([&] { call_external_command(child + " child-signal"); }, "exit code 143");
 #endif
@@ -242,6 +291,26 @@ int main(const int argc, const char* const* argv) {
             return 23;
         } else if (mode == "child-signal") {
             std::raise(SIGTERM);
+        } else if (mode == "child-large-output") {
+            std::cout << std::string(128 * 1024, 'x');
+            std::cout.write("a\0b", 3);
+        } else if (mode == "child-delay") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::cout << "done\n";
+        } else if (mode == "child-sleep" or mode == "child-closed-output" or mode == "child-active-output") {
+#if defined(_WIN32)
+            if (argc == 3)
+                write_file_sync(argv[2], std::to_string(::GetCurrentProcessId()));
+#endif
+            if (mode == "child-closed-output") {
+                std::fclose(stdout);
+                std::fclose(stderr);
+            }
+            for (int i = 0; i < 500; ++i) {
+                if (mode == "child-active-output")
+                    std::cerr << "progress\n";
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         } else if (mode == "environment") {
             for (const auto& path : DiskCache::from_env(Env("PLATFORM_TEST")).paths)
                 std::cout << path.string() << '\n';
@@ -259,6 +328,8 @@ int main(const int argc, const char* const* argv) {
                 test_filesystem(root);
             else if (mode == "cache")
                 test_cache(root);
+            else if (mode == "cache-fallback")
+                test_cache_fallback(root);
             else if (mode == "cache-worker")
                 cache_worker(root);
             else if (mode == "command")

@@ -89,6 +89,12 @@ class PlatformTests(unittest.TestCase):
     def test_cache(self):
         self.run_case('cache')
 
+    def test_cache_fallback(self):
+        result = self.run_case('cache-fallback')
+        blocked = self.directory / self._testMethodName / 'not a directory'
+        self.assertIn(f'DeepJIT cache warning: {blocked}:', result.stderr)
+        self.assertIn('trying next root', result.stderr)
+
     @unittest.skipIf(WINDOWS, 'POSIX cache permissions')
     def test_cache_permissions(self):
         root = self.directory / self._testMethodName / 'writable'
@@ -184,7 +190,7 @@ class PlatformTests(unittest.TestCase):
     def test_header_self_containment(self):
         headers = [
             'cache/disk.hpp', 'utils/command.hpp', 'utils/exception.hpp',
-            'utils/filesystem.hpp', 'utils/lazy.hpp', 'utils/uuid.hpp', 'utils/windows.hpp',
+            'utils/executor.hpp', 'utils/filesystem.hpp', 'utils/lazy.hpp', 'utils/uuid.hpp', 'utils/windows.hpp',
         ]
         if WITH_CUDA:
             headers.extend(f'backend/cuda/{name}.hpp' for name in ('backend', 'driver', 'kernel', 'options'))
