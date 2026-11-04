@@ -18,6 +18,9 @@ def test_executor():
         subprocess.run([executable, 'disable-fallback'],
                        env={**os.environ, 'DJ_DISABLE_CACHE_FALLBACK': '1'},
                        check=True, timeout=5)
+        subprocess.run([executable, 'fork'],
+                       env={**os.environ, 'DJ_FS_TIMEOUT_MS': '500'},
+                       check=True, timeout=10)
 
 
 if __name__ == '__main__':
