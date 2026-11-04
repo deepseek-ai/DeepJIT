@@ -55,6 +55,7 @@ public:
     }
 
     std::shared_ptr<Kernel> compile(const std::string& name, const std::string& source, const CompilerOptions& override_options = {}) {
+        validate_cache_tag(name);
         const auto options = default_compiler_options.override_with(override_options);
         const auto key = cache_key(source, options);
         return mem_cache.get_or_create(key, [&] {

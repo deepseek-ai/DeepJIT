@@ -158,6 +158,18 @@ int main(int argc, char** argv) {
     assert(kernel->data == "contents");
     assert(runtime.compile("kernel", "contents") == kernel);
     assert(load_calls == 1);
+    // A warm in-memory entry must not bypass the same tag validation as a miss.
+    for (const auto* tag : {"", "invalid-tag", "invalid/tag"}) {
+        bool rejected = false;
+        try { (void) runtime.compile(tag, "contents"); }
+        catch (const exception::Exception& error) {
+            rejected = std::string(error.what()).find("cache tag must contain only") != std::string::npos;
+        }
+        assert(rejected);
+    }
+    // Valid tags still share the same content-keyed in-memory entry.
+    assert(runtime.compile("another_valid_tag", "contents") == kernel);
+    assert(load_calls == 1);
 
     // Exhausting all roots reports an error; loaded kernels remain usable.
     configure(root / "all_failed");
