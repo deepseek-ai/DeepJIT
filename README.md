@@ -148,6 +148,10 @@ inline void init_jit(const std::string& library_root) {
 ```
 
 The lazy object must receive a factory before `jit->...` or Python `get_jit()` is called.
+Concurrent first access initializes a given lazy object once; if the factory
+throws, a later call can retry. Copying, assigning, or destroying the lazy
+object must not race with access. This guarantee applies to lazy initialization
+only and does not make the rest of the runtime or its caches thread-safe.
 
 ### Config
 
