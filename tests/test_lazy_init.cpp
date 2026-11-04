@@ -59,6 +59,13 @@ int main() {
 
     auto copy = retry;
     assert(copy.get() == retry.get());
+    int copied_calls = 0;
+    deep_jit::LazyInit<Value> pending([&] {
+        return std::make_shared<Value>(Value{++copied_calls});
+    });
+    auto pending_copy = pending;
+    assert(pending.get()->id == 1);
+    assert(pending_copy.get()->id == 2);
     deep_jit::LazyInit<Value> moved(std::move(copy));
     assert(moved.get() == retry.get());
     deep_jit::LazyInit<Value> assigned(nullptr);
