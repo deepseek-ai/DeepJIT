@@ -86,6 +86,7 @@ public:
                     break;
                 }
             }
+            DJ_HOST_ASSERT(not path.empty(), "failed to open: {}", filename);
 
             // Read code and get hash
             std::ifstream input(path);
