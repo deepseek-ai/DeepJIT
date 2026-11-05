@@ -57,7 +57,7 @@ public:
         const auto options = default_compiler_options.override_with(override_options);
         const auto key = cache_key(source, options);
         return mem_cache.get_or_create(key, [&] {
-            return backend.load(compile(name, source, key, options), env);
+            return backend.load(compile(name, source, key, options), env, disk_cache);
         });
     }
 

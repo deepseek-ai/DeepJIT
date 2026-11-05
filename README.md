@@ -419,6 +419,6 @@ const auto kernel = jit->compile("store", source, {.aicpu = true});
 jit->launch(kernel, {}, output, value);
 ```
 
-The source must define one `__aicpu__ __global__` kernel returning `unsigned int`. AICPU uses `aicpu_flags` / `aicpu_linker_flags` from `CompilerOptions::default_options()` and ignores `arch`, `num_blocks`, and `num_ubuf_bytes`. Stream, timeout, and launch-blocking options still apply. The first AICPU load of each Runtime takes some time to set up device resources for future AICPU kernels.
+The source must define one `__aicpu__ __global__` kernel returning `unsigned int`. AICPU uses `aicpu_flags` / `aicpu_linker_flags` from `CompilerOptions::default_options()` and ignores `arch`, `num_blocks`, and `num_ubuf_bytes`. Stream, timeout, and launch-blocking options still apply. The first AICPU load of each Runtime takes some time to set up device resources for future AICPU kernels. The bootstrap loader is compiled once and published to the disk cache, so later processes with the same toolkit and compiler reuse the cached build.
 
 Append AICPU compiler/linker options with `extra_aicpu_flags` / `extra_aicpu_linker_flags`; `extra_bisheng_flags` / `extra_linker_flags` apply only to AICore. Runtime defaults and per-compile extra flags are concatenated in that order.

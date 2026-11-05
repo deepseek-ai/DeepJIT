@@ -4,14 +4,14 @@
 
 namespace deep_jit::ascend::aicpu {
 
-// Host helper that builds and deploys the loader with a private CANN package configuration.
+// Host helper that packages and deploys the cached loader with a private CANN package configuration.
 inline constexpr std::string_view helper_source = R"DJPY(
 import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
+import shutil
 import sys
 import tarfile
 import uuid
@@ -26,18 +26,14 @@ def overlay(source, destination, private):
 
 
 def main():
-    cann, state = (Path(value) for value in sys.argv[1:3])
-    device, entry = int(sys.argv[3]), sys.argv[4]
+    cann, state, loader = (Path(value) for value in sys.argv[1:4])
+    device, entry = int(sys.argv[4]), sys.argv[5]
     shadow = state / 'shadow'
     name = 'deep_jit_aicpu_' + uuid.uuid4().hex
     library = 'lib' + name + '.so'
     stage = shadow / 'build/aicpu_kernels_device'
     stage.mkdir(parents=True)
-    subprocess.run([
-        str(cann / 'tools/hcc/bin/aarch64-target-linux-gnu-g++'),
-        '-std=c++17', '-O2', '-shared', '-fPIC', '-fvisibility=hidden',
-        str(state / 'loader.cpp'), '-ldl', '-o', str(stage / library),
-    ], check=True)
+    shutil.copyfile(loader, stage / library)
     digest = hashlib.sha256((stage / library).read_bytes()).hexdigest()
     (stage / 'bin_hash.cfg').write_text(f'{library}={digest}\n')
 

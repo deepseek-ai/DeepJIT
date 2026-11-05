@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <fcntl.h>
 #include <limits>
 #include <mutex>
 #include <spawn.h>
@@ -15,13 +16,18 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #include <deep_jit/backend/ascend/aicpu/bootstrap_abi.hpp>
 #include <deep_jit/backend/ascend/aicpu/bootstrap_device.hpp>
 #include <deep_jit/backend/ascend/aicpu/bootstrap_helper.hpp>
 #include <deep_jit/backend/ascend/driver.hpp>
+#include <deep_jit/cache/disk.hpp>
+#include <deep_jit/utils/command.hpp>
 #include <deep_jit/utils/filesystem.hpp>
 #include <deep_jit/utils/gil.hpp>
+#include <deep_jit/utils/hash.hpp>
+#include <deep_jit/utils/str.hpp>
 
 extern char** environ;
 
@@ -86,17 +92,57 @@ public:
     size_t size() const { return length; }
 };
 
-// Build the loader and deploy its library to the device filesystem.
+inline constexpr std::string_view loader_cache_tag = "aicpu_bootstrap";
+inline constexpr std::string_view loader_flags = "-std=c++17 -O2 -shared -fPIC -fvisibility=hidden -ldl";
+
+// Build the loader once and publish it to the JIT disk cache.
+inline std::filesystem::path build_loader(const std::filesystem::path& cann, const DiskCache& cache) {
+    const auto compiler = cann / "tools/hcc/bin/aarch64-target-linux-gnu-g++";
+    DJ_HOST_ASSERT(is_executable(compiler),
+                   "AICPU bootstrap deployment failed: loader compiler is not executable: {}",
+                   compiler.string());
+    const auto version = call_external_command(compiler.string() + " --version");
+    const auto digest = hash::FNV1a()
+                            .update(loader_flags)
+                            .update(abi_source)
+                            .update(device_source)
+                            .update(version)
+                            .get_hex_digest();
+    auto entry = cache.entry(std::string(loader_cache_tag), digest);
+    const auto library = entry.path / "libdeep_jit_aicpu_loader.so";
+    if (entry.hit) {
+        DJ_HOST_ASSERT(std::filesystem::is_regular_file(library),
+                       "AICPU bootstrap cache entry is incomplete: {}", entry.path.string());
+        return library;
+    }
+
+    write_file_sync(entry.path / "abi.hpp", abi_source);
+    write_file_sync(entry.path / "loader.cpp", device_source);
+    const std::vector<std::string> command = {
+        compiler.string(), "-std=c++17", "-O2", "-shared", "-fPIC", "-fvisibility=hidden",
+        (entry.path / "loader.cpp").string(), "-ldl", "-o", library.string(),
+    };
+    call_external_command(str::join(command));
+    DJ_HOST_ASSERT(std::filesystem::is_regular_file(library) and std::filesystem::file_size(library) > 0,
+                   "loader compiler did not produce the AICPU bootstrap library");
+    return entry.commit() / "libdeep_jit_aicpu_loader.so";
+}
+
+// Package the cached loader and deploy its library to the device filesystem.
 // A fresh helper process selects the private package before initializing CANN.
-inline void deploy_loader(const std::filesystem::path& cann, const std::filesystem::path& directory, const int device) {
-    write_file_sync(directory / "abi.hpp", abi_source);
-    write_file_sync(directory / "loader.cpp", device_source);
+inline void deploy_loader(const std::filesystem::path& cann,
+                          const std::filesystem::path& directory,
+                          const std::filesystem::path& loader,
+                          const int device) {
     write_file_sync(directory / "helper.py", helper_source);
     const auto log = directory / "deploy.log";
     std::string python = "python3", script = (directory / "helper.py").string();
-    auto toolkit = cann.string(), output = directory.string(), index = std::to_string(device);
+    auto toolkit = cann.string(), output = directory.string(), binary = loader.string(), index = std::to_string(device);
     std::string symbol = entry;
-    char* argv[] = {python.data(), script.data(), toolkit.data(), output.data(), index.data(), symbol.data(), nullptr};
+    char* argv[] = {
+        python.data(), script.data(), toolkit.data(), output.data(),
+        binary.data(), index.data(), symbol.data(), nullptr,
+    };
 
     posix_spawn_file_actions_t actions;
     DJ_HOST_ASSERT(posix_spawn_file_actions_init(&actions) == 0, "cannot initialize AICPU helper actions");
@@ -177,10 +223,10 @@ public:
     aclrtFuncHandle get_loader_handle() const { return loader_handle; }
     const std::filesystem::path& get_directory() const { return directory_; }
 
-    explicit AicpuBootstrap(const std::filesystem::path& cann) {
+    explicit AicpuBootstrap(const std::filesystem::path& cann, const DiskCache& cache) {
         int device;
         DJ_ACL_CHECK(driver::lazy_aclrtGetDevice(&device));
-        // Create a private directory for bootstrap sources
+        // Create a private directory for the deployed bootstrap
         // TODO: Sharing the bootstrap among Runtime instances created in the same context
         auto pattern = (std::filesystem::temp_directory_path() / "deep-jit-aicpu-XXXXXX").string();
         DJ_HOST_ASSERT(mkdtemp(pattern.data()) != nullptr, "cannot create AICPU bootstrap work directory: {}", std::strerror(errno));
@@ -188,7 +234,8 @@ public:
         try {
             DJ_ACL_CHECK(driver::lazy_aclrtCreateStream(&loader_stream));
             DJ_ACL_CHECK(driver::lazy_aclrtMalloc(&result_buffer, sizeof(aicpu::LoaderResult), ACL_MEM_MALLOC_HUGE_FIRST));
-            aicpu::deploy_loader(cann, directory_, device);
+            const auto loader = aicpu::build_loader(cann, cache);
+            aicpu::deploy_loader(cann, directory_, loader, device);
             // We can use mode 0 to register the deployed library's entry
             const auto config = directory_ / "shadow/conf/bootstrap.json";
             aclrtBinaryLoadOption option{};

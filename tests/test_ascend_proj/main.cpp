@@ -124,6 +124,19 @@ void check_tmp_is_empty(const fs::path& cache_root) {
                    "temporary artifacts were not cleaned: {}", tmp_dir.string());
 }
 
+std::vector<fs::path> get_bootstrap_cache_entries(const fs::path& cache_root) {
+    std::vector<fs::path> entries;
+    const auto cache_dir = cache_root / "cache";
+    if (not fs::is_directory(cache_dir))
+        return entries;
+    for (const auto& entry: fs::directory_iterator(cache_dir)) {
+        if (entry.path().filename().string().starts_with("aicpu_bootstrap."))
+            entries.push_back(entry.path());
+    }
+    std::ranges::sort(entries);
+    return entries;
+}
+
 class DeviceBuffer {
 public:
     void* data = nullptr;
@@ -166,7 +179,7 @@ int launch_increment(Runtime& runtime,
     return copy_from_device<int>(output).front();
 }
 
-void test_aicpu(Runtime& runtime) {
+void test_aicpu(Runtime& runtime, const fs::path& cache_root) {
     // Bootstrap should create lazily until AICPU kernel load
     DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == nullptr);
     const auto core_only = runtime.compile("aicpu_lazy_core", get_increment_source(0));
@@ -195,6 +208,14 @@ extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int6
     const auto bootstrap = runtime.backend.aicpu_bootstrap;
     DJ_HOST_ASSERT(bootstrap != nullptr);
     DJ_HOST_ASSERT(kernel == runtime.compile("aicpu_store", source, options));
+    // The loader is built once and published to the JIT cache.
+    const auto bootstrap_entries = get_bootstrap_cache_entries(cache_root);
+    DJ_HOST_ASSERT(bootstrap_entries.size() == 1);
+    const auto cached_library = bootstrap_entries.front() / "libdeep_jit_aicpu_loader.so";
+    DJ_HOST_ASSERT(fs::is_regular_file(bootstrap_entries.front() / "abi.hpp"));
+    DJ_HOST_ASSERT(fs::is_regular_file(bootstrap_entries.front() / "loader.cpp"));
+    DJ_HOST_ASSERT(fs::is_regular_file(cached_library));
+    const auto cached_library_time = fs::last_write_time(cached_library);
     const auto check = [&](const std::shared_ptr<Runtime::Kernel>& candidate, int bias) {
         DeviceBuffer output(3 * sizeof(int64_t));
         copy_to_device(output, std::vector<int64_t>(3, -1));
@@ -204,7 +225,7 @@ extern "C" __aicpu__ __global__ unsigned int store(int64_t* out, int32_t a, int6
                         std::vector<int64_t>{-7 + bias, 0x123456789abcdef, 12}));
     };
     check(kernel, 0);
-    check(runtime.backend.load(artifact, runtime.env), 0);
+    check(runtime.backend.load(artifact, runtime.env, runtime.disk_cache), 0);
     auto variant = runtime.default_compiler_options.override_with(options);
     variant.optimize_level = "0";  // Non-inlined interface calls must bind to this variant.
     variant.aicpu_flags->emplace_back("-DTEST_BIAS=13");
@@ -235,13 +256,16 @@ extern "C" __aicpu__ __global__ unsigned int missing() { return deep_jit_missing
 )", options);
     }, "AICPU loader failed");
     // A failed Load must leave the shared loader stream and result buffer reusable.
-    check(runtime.backend.load(artifact, runtime.env), 0);
+    check(runtime.backend.load(artifact, runtime.env, runtime.disk_cache), 0);
     check(kernel, 0);
     DJ_HOST_ASSERT(runtime.backend.aicpu_bootstrap == bootstrap);
 
     // An externally held kernel retains its bootstrap after Runtime destruction.
     auto owner = make_runtime(get_test_project_dir() / "include_original");
     auto retained = owner->compile("aicpu_retained", empty_source, options);
+    // A second Runtime reuses the cached loader instead of rebuilding it.
+    DJ_HOST_ASSERT(get_bootstrap_cache_entries(cache_root).size() == 1);
+    DJ_HOST_ASSERT(fs::last_write_time(cached_library) == cached_library_time);
     const auto directory = owner->backend.aicpu_bootstrap->get_directory();
     owner.reset();
     DJ_HOST_ASSERT(fs::is_directory(directory));
@@ -256,7 +280,7 @@ extern "C" __aicpu__ __global__ unsigned int missing() { return deep_jit_missing
     const auto* tmpdir = std::getenv("TMPDIR");
     const auto saved_tmpdir = tmpdir != nullptr ? std::optional<std::string>(tmpdir) : std::nullopt;
     set_env("TMPDIR", failure_root.string());
-    expect_failure([&] { deep_jit::ascend::AicpuBootstrap invalid(failure_root / "missing_toolkit"); },
+    expect_failure([&] { deep_jit::ascend::AicpuBootstrap invalid(failure_root / "missing_toolkit", runtime.disk_cache); },
                    "AICPU bootstrap deployment failed");
     if (saved_tmpdir)
         set_env("TMPDIR", *saved_tmpdir);
@@ -438,6 +462,11 @@ void test_options(Runtime& runtime) {
     DJ_HOST_ASSERT(defaults.arch == runtime.device.get_npu_arch());
     DJ_HOST_ASSERT(defaults.bisheng_flags.has_value());
     DJ_HOST_ASSERT(defaults.linker_flags.has_value());
+    DJ_HOST_ASSERT(defaults.aicpu_flags.has_value());
+    DJ_HOST_ASSERT(defaults.aicpu_linker_flags.has_value());
+    DJ_HOST_ASSERT(std::ranges::find(*defaults.aicpu_flags, "-std=c++17") != defaults.aicpu_flags->end());
+    DJ_HOST_ASSERT(std::ranges::find(*defaults.aicpu_flags, "-D_GNU_SOURCE") != defaults.aicpu_flags->end());
+    DJ_HOST_ASSERT(std::ranges::find(*defaults.aicpu_linker_flags, "--eh-frame-hdr") != defaults.aicpu_linker_flags->end());
     const auto default_flags = defaults.get_bisheng_flags();
     const auto no_preload = std::ranges::find(default_flags, "-cce-aicore-dcpreload-args=false");
     DJ_HOST_ASSERT(no_preload != default_flags.end() and no_preload != default_flags.begin());
@@ -883,7 +912,7 @@ void run_tests(pybind11::module_ module) {
 
     const auto runtime = make_runtime(get_test_project_dir() / "include_original");
     run_test("Ascend device", [&] { test_device(*runtime); });
-    run_test("AICPU", [&] { test_aicpu(*runtime); });
+    run_test("AICPU", [&] { test_aicpu(*runtime, cache_root); });
     run_test("compiler and launch options", [&] { test_options(*runtime); });
     run_test("artifact and metadata", [&] { test_artifact_and_metadata(*runtime); });
     run_test("template source and runtime arguments", [&] { test_increment_and_cache(*runtime); });
