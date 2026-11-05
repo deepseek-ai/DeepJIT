@@ -146,10 +146,8 @@ public:
 
 namespace detail {
 
-inline ThreadExecutor& io_executor() {
-    static ThreadExecutor executor;
-    return executor;
-}
+// Initialize before global JIT handles so their workers can use IO during shutdown.
+inline ThreadExecutor io_executor;
 
 inline std::chrono::milliseconds io_timeout() {
     static const auto timeout = [] {
@@ -187,7 +185,7 @@ template<typename F>
 auto run_in_iothread(F&& f) -> std::invoke_result_t<std::decay_t<F>&> {
     if (detail::in_iothread or detail::disable_cache_fallback())
         return std::invoke(f);
-    return detail::io_executor().run(std::forward<F>(f), detail::io_timeout());
+    return detail::io_executor.run(std::forward<F>(f), detail::io_timeout());
 }
 
 } // namespace deep_jit
