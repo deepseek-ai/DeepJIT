@@ -56,6 +56,7 @@ public:
 
     Toolkit toolkit;
     CompilerInfo compiler_info;
+    mutable std::shared_ptr<ascend::AicpuBootstrap> aicpu_bootstrap;
 
     explicit Ascend(const Env&)
         : toolkit(find_ascend_toolkit()),
@@ -78,6 +79,7 @@ public:
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
+        const bool aicpu = options.aicpu.value_or(false);
         const bool print_compiler_command = env.get<bool>("JIT_DEBUG", false) or
                                             env.get<bool>("JIT_PRINT_COMPILER_COMMAND", false);
 
@@ -91,7 +93,7 @@ public:
         });
         const auto source_path = dir / "kernel.asc";
         const auto relocatable_path = dir / "kernel.rel.o";
-        const auto binary_path = dir / "kernel.o";
+        const auto binary_path = dir / (aicpu ? "kernel.aicpu.so" : "kernel.o");
 
         // Build commands
         std::vector<std::string> base_bisheng_args = {toolkit.bisheng.string()};
@@ -100,6 +102,13 @@ public:
         for (const auto& include_dir: config.include_dirs)
             base_bisheng_args.emplace_back("-I" + include_dir.string());
         base_bisheng_args.emplace_back("-I" + toolkit.asc_devkit_include.string());
+        if (aicpu) {
+            // HCOMM's ABI headers require AscendC SDK include directories.
+            const auto asc_include = toolkit.asc_devkit_include.parent_path();
+            for (const auto& include_dir: {asc_include, asc_include / "basic_api", asc_include.parent_path(),
+                                           asc_include.parent_path().parent_path() / "include"})
+                base_bisheng_args.emplace_back("-I" + include_dir.string());
+        }
 
         auto bisheng_args = base_bisheng_args;
         bisheng_args.insert(bisheng_args.end(), {
@@ -129,10 +138,10 @@ public:
             const auto asm_dir = dir / "asm";
             auto asm_args = base_bisheng_args;
             asm_args.insert(asm_args.end(), {
-                "-save-temps",
+                aicpu ? "-S" : "-save-temps",
                 source_path.string(),
                 "-o",
-                (asm_dir / "kernel.rel.o").string(),
+                (asm_dir / (aicpu ? "kernel.s" : "kernel.rel.o")).string(),
             });
             call_external_command("cd " + asm_dir.string() + " && " + str::join(asm_args),
                                   print_compiler_command);
@@ -153,8 +162,19 @@ public:
         });
     }
 
-    [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
-        return Kernel::load(dir, env);
+    [[nodiscard]] std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
+                                               const Env& env,
+                                               const DiskCache& disk_cache) const {
+        // Release GIL to let other Python threads run since booting AICPU bootstrap takes some time
+        [[maybe_unused]] GilScopedRelease gil_release;
+        const bool is_aicpu = run_in_iothread([dir] {
+            return std::filesystem::is_regular_file(dir / "kernel.aicpu.so");
+        });
+        // Initialize bootstrap at the first AICPU kernel load
+        if (aicpu_bootstrap == nullptr and is_aicpu)
+            aicpu_bootstrap = std::make_shared<ascend::AicpuBootstrap>(
+                toolkit.bisheng.parent_path().parent_path(), disk_cache);
+        return Kernel::load(dir, env, aicpu_bootstrap);
     }
 
     static Toolkit find_ascend_toolkit() {

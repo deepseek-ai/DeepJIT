@@ -11,6 +11,7 @@ DJ_DECL_LAZY_DL_HANDLE(get_acl_handle, "libascendcl.so");
 
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclGetRecentErrMsg);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryLoadFromData);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryLoadFromFile);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryUnLoad);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtBinaryGetFunction);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtLaunchKernelWithHostArgs);
@@ -18,6 +19,16 @@ DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtGetDevice);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtGetSocName);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtGetDeviceInfo);
 DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtSynchronizeDevice);
+
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtCreateStream);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtDestroyStream);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtSynchronizeStream);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtMalloc);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtFree);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtMemcpy);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtHostRegisterV2);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtHostGetDevicePointer);
+DJ_DECL_LAZY_DL_FUNCTION(get_acl_handle, aclrtHostUnregister);
 
 inline void check_acl(const aclError error, const char* expression) {
     if (error == ACL_SUCCESS)

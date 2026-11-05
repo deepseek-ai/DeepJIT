@@ -291,14 +291,17 @@ def validate_artifacts(temporary_dir):
         artifact = metadata_path.parent
         assert (artifact / '.committed').is_file(), artifact
         assert (artifact / 'kernel.asc').is_file(), artifact
-        assert (artifact / 'kernel.o').stat().st_size > 0, artifact
         assert not (artifact / 'kernel.rel.o').exists(), artifact
         metadata = json.loads(metadata_path.read_text())
+        binary = 'kernel.aicpu.so' if metadata['compiler_options']['aicpu'] else 'kernel.o'
+        assert (artifact / binary).stat().st_size > 0, artifact
         assert set(metadata) == {'command', 'config', 'compiler_info', 'compiler_options'}
         assert set(metadata['compiler_info']) == {'path', 'version', 'linker_path', 'linker_version'}
         assert set(metadata['compiler_options']) == {
-            'optimize_level', 'arch', 'debug_info', 'dump_asm',
-            'bisheng_flags', 'linker_flags', 'extra_bisheng_flags', 'extra_linker_flags',
+            'aicpu', 'optimize_level', 'arch', 'debug_info', 'dump_asm',
+            'bisheng_flags', 'linker_flags', 'aicpu_flags', 'aicpu_linker_flags',
+            'extra_bisheng_flags', 'extra_linker_flags',
+            'extra_aicpu_flags', 'extra_aicpu_linker_flags',
         }
         assert metadata['compiler_info']['path']
         assert metadata['compiler_info']['version']

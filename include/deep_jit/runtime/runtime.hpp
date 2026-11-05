@@ -117,10 +117,14 @@ private:
                     backend.compile(source, entry.path, env, config, options);
                     entry.commit();
                 }
-                if constexpr (load)
-                    return Backend::load(entry.path, env);
-                else
+                if constexpr (load) {
+                    if constexpr (requires { backend.load(entry.path, env, disk_cache); })
+                        return backend.load(entry.path, env, disk_cache);
+                    else
+                        return Backend::load(entry.path, env);
+                } else {
                     return entry.path;
+                }
             } catch (const std::exception& error) {
                 if (detail::disable_cache_fallback())
                     throw;
