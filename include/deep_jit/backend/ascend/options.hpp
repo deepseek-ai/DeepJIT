@@ -55,13 +55,17 @@ struct CompilerOptions {
                 "--cce-aicore-lang", "--cce-lite-aicpu", "--cce-aicpu-only",
                 "--cce-aicpu-launch-with-interface",
                 // CANN 9.2 requires an AICore arch even for the Cortex-A55 pass.
-                "--cce-aicore-arch=dav-c310-vec", "-fPIC", "-c",
+                "--cce-aicore-arch=dav-c310-vec",
+                // AICPU needs GNU libc declarations for the C++ standard library.
+                "-std=c++17", "-D_GNU_SOURCE",
+                "-fPIC", "-c",
             },
             .aicpu_linker_flags = std::vector<std::string> {
-                // Keep function addresses nonzero and bind local definitions
-                // so JIT variants do not interpose through RTLD_GLOBAL.
+                // Keep function addresses nonzero, bind local definitions so JIT
+                // variants do not interpose through RTLD_GLOBAL, and emit an
+                // EH frame header so the C++ unwinder finds exception handlers.
                 "-m", "aicpulinux", "-shared", "-soname=libkernel.aicpu.so",
-                "-Bsymbolic", "--no-mmap-output-file",
+                "-Bsymbolic", "--eh-frame-hdr", "--no-mmap-output-file",
             },
         };
     }

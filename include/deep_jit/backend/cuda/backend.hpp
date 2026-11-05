@@ -171,6 +171,12 @@ public:
         return Kernel::load(dir, env);
     }
 
+    [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
+                                                      const Env& env,
+                                                      const DiskCache&) {
+        return Kernel::load(dir, env);
+    }
+
     static Toolkit find_cuda_toolkit(const Env& env) {
         std::filesystem::path home_path;
 
