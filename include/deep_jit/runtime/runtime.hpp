@@ -3,11 +3,14 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
 
 #include <deep_jit/cache/disk.hpp>
 #include <deep_jit/cache/memory.hpp>
 #include <deep_jit/runtime/config.hpp>
+#include <deep_jit/runtime/precompiler.hpp>
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/gil.hpp>
 #include <deep_jit/utils/hash.hpp>
@@ -51,42 +54,44 @@ public:
         //   - Code (contains its includes)
         hash_base.update(this->config.extra_signature);
         hash_base.update(this->backend.compiler_info.get_hash());
+
+        if (env.get<bool>("JIT_DRY_RUN", false)) {
+            const auto num_cpus = std::thread::hardware_concurrency();
+            const int num_workers = env.get<int>("JIT_COMPILE_THREADS", num_cpus == 0 ? 1 : static_cast<int>(num_cpus));
+            precompiler = std::make_unique<Precompiler>(num_workers);
+        }
     }
 
     std::shared_ptr<Kernel> compile(const std::string& name, const std::string& source, const CompilerOptions& override_options = {}) {
         const auto options = default_compiler_options.override_with(override_options);
         const auto key = cache_key(source, options);
+        if (precompiler) {
+            precompiler->enqueue(name + "." + key, [this, name, source, key, options] {
+                compile_impl<false>(name, source, key, options);
+            });
+            return nullptr;
+        }
         return mem_cache.get_or_create(key, [&] {
-            return backend.load(compile(name, source, key, options), env, disk_cache);
+            return compile_impl<true>(name, source, key, options);
         });
     }
 
     std::filesystem::path compile_without_load(const std::string& name, const std::string& source, const CompilerOptions& override_options = {}) {
         const auto options = default_compiler_options.override_with(override_options);
-        return compile(name, source, cache_key(source, options), options);
+        return compile_impl<false>(name, source, cache_key(source, options), options);
+    }
+
+    std::filesystem::path compile(const std::string& name, const std::string& source,
+                                  const std::string& key, const CompilerOptions& options) const {
+        return compile_impl<false>(name, source, key, options);
     }
 
     template <typename... Args>
     void launch(const std::shared_ptr<Kernel>& kernel, const LaunchOptions& override_options, const Args&... args) {
+        if (precompiler)
+            return;
         DJ_HOST_ASSERT(kernel != nullptr, "kernel must not be null");
         kernel->launch(default_launch_options.override_with(override_options), args...);
-    }
-
-    std::filesystem::path compile(const std::string& name,
-                                  const std::string& source,
-                                  const std::string& key,
-                                  const CompilerOptions& options) const {
-        // Try disk cache firstly
-        auto entry = disk_cache.entry(name, key);
-        if (entry.hit)
-            return entry.path;
-
-        // Compile
-        backend.compile(source, entry.path, env, config, options);
-
-        // Publish
-        [[maybe_unused]] GilScopedRelease gil_release;
-        return entry.commit();
     }
 
     std::string cache_key(const std::string& source, const CompilerOptions& options) {
@@ -95,6 +100,42 @@ public:
         return hash.update(options.get_post_hook_hash(config))
                    .update(parser.parse_into_hash(source))
                    .get_hex_digest();
+    }
+
+private:
+    std::unique_ptr<Precompiler> precompiler;
+
+    template <bool load>
+    auto compile_impl(const std::string& name, const std::string& source,
+                      const std::string& key, const CompilerOptions& options) const {
+        [[maybe_unused]] GilScopedRelease gil_release;
+        size_t first_root = 0;
+        for (;;) {
+            auto entry = disk_cache.entry(name, key, first_root);
+            try {
+                if (not entry.hit) {
+                    backend.compile(source, entry.path, env, config, options);
+                    entry.commit();
+                }
+                if constexpr (load) {
+                    if constexpr (requires { backend.load(entry.path, env, disk_cache); })
+                        return backend.load(entry.path, env, disk_cache);
+                    else
+                        return Backend::load(entry.path, env);
+                } else {
+                    return entry.path;
+                }
+            } catch (const std::exception& error) {
+                if (detail::disable_cache_fallback())
+                    throw;
+                // Only timed-out IO or timed-out commands can still be using this directory.
+                entry.abandoned = dynamic_cast<const IOTimeoutError*>(&error) != nullptr or
+                                  std::string_view(error.what()).find("command timed out") != std::string_view::npos;
+                disk_cache.report_error(entry.root_index, error);
+                first_root = entry.root_index + 1;
+                if (first_root == disk_cache.paths.size()) throw;
+            }
+        }
     }
 };
 

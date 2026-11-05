@@ -10,6 +10,7 @@
 #include <exception>
 #include <execinfo.h>
 #include <format>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -124,6 +125,8 @@ inline std::string demangle(const char* name) {
 template <std::size_t num_frames_to_skip = 0>
 inline __attribute__((noinline)) std::string get_backtrace() {
     static DwflApi api;
+    static std::mutex mutex;
+    const std::lock_guard lock(mutex);
     api.refresh();
 
     constexpr int max_num_frames = 16;

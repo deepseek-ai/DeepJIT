@@ -56,7 +56,7 @@ public:
 
     Toolkit toolkit;
     CompilerInfo compiler_info;
-    std::shared_ptr<ascend::AicpuBootstrap> aicpu_bootstrap;
+    mutable std::shared_ptr<ascend::AicpuBootstrap> aicpu_bootstrap;
 
     explicit Ascend(const Env&)
         : toolkit(find_ascend_toolkit()),
@@ -79,17 +79,21 @@ public:
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
-        // Paths
-        dir = std::filesystem::absolute(dir).lexically_normal();
-        const auto source_path = dir / "kernel.asc";
-        const auto relocatable_path = dir / "kernel.rel.o";
         const bool aicpu = options.aicpu.value_or(false);
-        const auto binary_path = dir / (aicpu ? "kernel.aicpu.so" : "kernel.o");
         const bool print_compiler_command = env.get<bool>("JIT_DEBUG", false) or
                                             env.get<bool>("JIT_PRINT_COMPILER_COMMAND", false);
 
-        // Write source code
-        write_file_sync(source_path, source);
+        // Prepare inputs in one IO task. Own captures in case the task times out.
+        dir = run_in_iothread([dir, source, dump_asm = options.dump_asm.value_or(false)] {
+            const auto path = std::filesystem::absolute(dir).lexically_normal();
+            write_file_sync(path / "kernel.asc", source);
+            if (dump_asm)
+                make_dirs(path / "asm");
+            return path;
+        });
+        const auto source_path = dir / "kernel.asc";
+        const auto relocatable_path = dir / "kernel.rel.o";
+        const auto binary_path = dir / (aicpu ? "kernel.aicpu.so" : "kernel.o");
 
         // Build commands
         std::vector<std::string> base_bisheng_args = {toolkit.bisheng.string()};
@@ -128,14 +132,10 @@ public:
         const auto cd_command = "cd " + dir.string() + " && ";
         call_external_command(cd_command + bisheng_command, print_compiler_command);
         call_external_command(cd_command + linker_command, print_compiler_command);
-        safe_remove_all(relocatable_path);
-        DJ_HOST_ASSERT(std::filesystem::is_regular_file(binary_path) and std::filesystem::file_size(binary_path) != 0,
-                       "Bisheng did not produce a valid Ascend binary: {}", binary_path.string());
 
         // Dump assembly
         if (options.dump_asm.value_or(false)) {
             const auto asm_dir = dir / "asm";
-            make_dirs(asm_dir);
             auto asm_args = base_bisheng_args;
             asm_args.insert(asm_args.end(), {
                 aicpu ? "-S" : "-save-temps",
@@ -147,23 +147,31 @@ public:
                                   print_compiler_command);
         }
 
-        // Write metadata
+        // Validate outputs and finish writes in one IO task.
         const json metadata = json::object_t {
             {"command", bisheng_command + " && " + linker_command},
             {"config", config.to_json()},
             {"compiler_info", compiler_info.to_json()},
             {"compiler_options", options.to_json()},
         };
-        write_file_sync(dir / "meta.json", metadata.dump());
+        run_in_iothread([dir, binary_path, relocatable_path, data = metadata.dump()] {
+            DJ_HOST_ASSERT(std::filesystem::is_regular_file(binary_path) and std::filesystem::file_size(binary_path) != 0,
+                           "Bisheng did not produce a valid Ascend binary: {}", binary_path.string());
+            safe_remove_all(relocatable_path);
+            write_file_sync(dir / "meta.json", data);
+        });
     }
 
     [[nodiscard]] std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
                                                const Env& env,
-                                               const DiskCache& disk_cache) {
+                                               const DiskCache& disk_cache) const {
         // Release GIL to let other Python threads run since booting AICPU bootstrap takes some time
         [[maybe_unused]] GilScopedRelease gil_release;
+        const bool is_aicpu = run_in_iothread([dir] {
+            return std::filesystem::is_regular_file(dir / "kernel.aicpu.so");
+        });
         // Initialize bootstrap at the first AICPU kernel load
-        if (aicpu_bootstrap == nullptr and std::filesystem::is_regular_file(dir / "kernel.aicpu.so"))
+        if (aicpu_bootstrap == nullptr and is_aicpu)
             aicpu_bootstrap = std::make_shared<ascend::AicpuBootstrap>(
                 toolkit.bisheng.parent_path().parent_path(), disk_cache);
         return Kernel::load(dir, env, aicpu_bootstrap);

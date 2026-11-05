@@ -10,7 +10,6 @@
 #include <elf.h>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <set>
@@ -25,9 +24,10 @@
 #include <deep_jit/backend/ascend/driver.hpp>
 #include <deep_jit/backend/ascend/options.hpp>
 #include <deep_jit/utils/env.hpp>
+#include <deep_jit/utils/executor.hpp>
+#include <deep_jit/utils/filesystem.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/gil.hpp>
-#include <deep_jit/utils/filesystem.hpp>
 
 namespace deep_jit::ascend {
 
@@ -60,39 +60,33 @@ public:
     Kernel(Kernel&&) = delete;
     Kernel& operator=(Kernel&&) = delete;
 
-    static std::vector<std::string> parse_kernel_names(const std::filesystem::path& path) {
+    static std::vector<std::string> parse_kernel_names(const std::string& data) {
         // Read header
-        std::ifstream input(path, std::ios::binary | std::ios::ate);
-        DJ_HOST_ASSERT(input.is_open(), "failed to open Ascend binary: {}", path.string());
-        const auto file_size = input.tellg();
-        DJ_HOST_ASSERT(file_size >= static_cast<std::streamoff>(sizeof(Elf64_Ehdr)),
-                       "invalid Ascend binary: {}", path.string());
-        input.seekg(0);
+        const auto file_size = data.size();
+        DJ_HOST_ASSERT(file_size >= sizeof(Elf64_Ehdr),
+                       "invalid Ascend binary");
 
         Elf64_Ehdr header{};
-        input.read(reinterpret_cast<char*>(&header), sizeof(header));
-        DJ_HOST_ASSERT(input and std::memcmp(header.e_ident, ELFMAG, SELFMAG) == 0,
-                       "not an ELF file: {}", path.string());
+        std::memcpy(&header, data.data(), sizeof(header));
+        DJ_HOST_ASSERT(std::memcmp(header.e_ident, ELFMAG, SELFMAG) == 0,
+                       "not an ELF file");
         DJ_HOST_ASSERT(header.e_ident[EI_CLASS] == ELFCLASS64 and header.e_ident[EI_DATA] == ELFDATA2LSB,
-                       "unsupported ELF format: {}", path.string());
+                       "unsupported ELF format");
         DJ_HOST_ASSERT(header.e_shentsize == sizeof(Elf64_Shdr) and header.e_shnum > 0,
-                       "invalid ELF section table: {}", path.string());
+                       "invalid ELF section table");
 
         // Read sections
         const auto section_table_size = static_cast<uint64_t>(header.e_shnum) * sizeof(Elf64_Shdr);
         DJ_HOST_ASSERT(header.e_shoff <= static_cast<uint64_t>(file_size) and
                        section_table_size <= static_cast<uint64_t>(file_size) - header.e_shoff,
-                       "truncated ELF section table: {}", path.string());
+                       "truncated ELF section table");
         std::vector<Elf64_Shdr> sections(header.e_shnum);
-        input.seekg(static_cast<std::streamoff>(header.e_shoff));
-        input.read(reinterpret_cast<char*>(sections.data()), static_cast<std::streamsize>(section_table_size));
-        DJ_HOST_ASSERT(input, "failed to read ELF section table: {}", path.string());
+        std::memcpy(sections.data(), data.data() + header.e_shoff, section_table_size);
 
         if (header.e_type == ET_DYN and header.e_machine == EM_AARCH64) {
-            const auto data = read(path);
             const auto check_range = [&](uint64_t offset, uint64_t size) {
                 DJ_HOST_ASSERT(offset <= data.size() and size <= data.size() - offset,
-                               "truncated AICPU ELF: {}", path.string());
+                               "truncated AICPU ELF");
             };
             // Match exported <name>/<name>_interface function pairs, as Bisheng
             // generates them only for __aicpu__ kernels, not ordinary helpers.
@@ -102,7 +96,7 @@ public:
                     continue;
                 DJ_HOST_ASSERT(section.sh_entsize == sizeof(Elf64_Sym) and
                                section.sh_size % sizeof(Elf64_Sym) == 0 and section.sh_link < sections.size(),
-                               "invalid AICPU ELF symbol table: {}", path.string());
+                               "invalid AICPU ELF symbol table");
                 const auto& strings = sections[section.sh_link];
                 DJ_HOST_ASSERT(strings.sh_type == SHT_STRTAB, "invalid AICPU ELF string table");
                 check_range(section.sh_offset, section.sh_size);
@@ -137,16 +131,14 @@ public:
             ? sections.front().sh_link
             : header.e_shstrndx;
         DJ_HOST_ASSERT(string_table_index < sections.size(),
-                       "invalid ELF string table index: {}", path.string());
+                       "invalid ELF string table index");
         const auto& string_table_section = sections[string_table_index];
         DJ_HOST_ASSERT(string_table_section.sh_offset <= static_cast<uint64_t>(file_size) and
                        string_table_section.sh_size <= static_cast<uint64_t>(file_size) - string_table_section.sh_offset,
-                       "truncated ELF string table: {}", path.string());
+                       "truncated ELF string table");
 
-        std::string string_table(string_table_section.sh_size, '\0');
-        input.seekg(static_cast<std::streamoff>(string_table_section.sh_offset));
-        input.read(string_table.data(), static_cast<std::streamsize>(string_table.size()));
-        DJ_HOST_ASSERT(input, "failed to read ELF string table: {}", path.string());
+        const std::string_view string_table(data.data() + string_table_section.sh_offset,
+                                            string_table_section.sh_size);
 
         // Collect kernel names
         constexpr std::string_view prefix = ".ascend.meta.";
@@ -175,26 +167,30 @@ public:
         return kernel_names;
     }
 
+    static std::vector<std::string> parse_kernel_names(const std::filesystem::path& path) {
+        return parse_kernel_names(read_bytes(path));
+    }
+
     static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env,
                                         std::shared_ptr<AicpuBootstrap> bootstrap = nullptr) {
         // Release GIL to let other Python threads run
         [[maybe_unused]] GilScopedRelease gil_release;
 
-        // Check existence
-        const bool is_aicpu = std::filesystem::is_regular_file(dir / "kernel.aicpu.so");
-        const auto binary_path = dir / (is_aicpu ? "kernel.aicpu.so" : "kernel.o");
-        DJ_HOST_ASSERT(std::filesystem::is_regular_file(binary_path),
-                       "missing Ascend binary: {}", binary_path.string());
-
         // Record start time
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_load_time = debug or env.get<bool>("JIT_PRINT_LOAD_TIME", false);
+        const auto start_time = print_load_time ? std::chrono::steady_clock::now()
+                                                : std::chrono::steady_clock::time_point{};
+        auto [is_aicpu, binary_path, data] = run_in_iothread([dir] {
+            const bool aicpu = std::filesystem::is_regular_file(dir / "kernel.aicpu.so");
+            const auto path = dir / (aicpu ? "kernel.aicpu.so" : "kernel.o");
+            return std::tuple{aicpu, path, read_bytes(path)};
+        });
         if (debug)
             std::fputs(std::format("Loading Ascend binary: {}\n", binary_path.string()).c_str(), stdout);
-        const auto start_time = std::chrono::steady_clock::now();
 
         // Load kernel
-        const auto kernel_names = parse_kernel_names(binary_path);
+        const auto kernel_names = parse_kernel_names(data);
         DJ_HOST_ASSERT(kernel_names.size() == 1,
                        "expected exactly one kernel in {}, found {}",
                        binary_path.string(), kernel_names.size());
@@ -207,7 +203,8 @@ public:
             kernel->kernel_handle = bootstrap->get_loader_handle();
             kernel->aicpu_bootstrap = std::move(bootstrap);
         } else {
-            DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromFile(binary_path.c_str(), nullptr, &kernel->binary_handle));
+            DJ_ACL_CHECK(driver::lazy_aclrtBinaryLoadFromData(
+                data.data(), data.size(), nullptr, &kernel->binary_handle));
             DJ_ACL_CHECK(driver::lazy_aclrtBinaryGetFunction(
                 kernel->binary_handle, kernel_names.front().c_str(), &kernel->kernel_handle));
         }

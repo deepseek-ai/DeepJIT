@@ -108,24 +108,44 @@ inline std::filesystem::path build_loader(const std::filesystem::path& cann, con
                             .update(device_source)
                             .update(version)
                             .get_hex_digest();
-    auto entry = cache.entry(std::string(loader_cache_tag), digest);
-    const auto library = entry.path / "libdeep_jit_aicpu_loader.so";
-    if (entry.hit) {
-        DJ_HOST_ASSERT(std::filesystem::is_regular_file(library),
-                       "AICPU bootstrap cache entry is incomplete: {}", entry.path.string());
-        return library;
-    }
+    size_t first_root = 0;
+    for (;;) {
+        auto entry = cache.entry(std::string(loader_cache_tag), digest, first_root);
+        try {
+            const auto library = entry.path / "libdeep_jit_aicpu_loader.so";
+            if (entry.hit) {
+                run_in_iothread([library, dir = entry.path] {
+                    DJ_HOST_ASSERT(std::filesystem::is_regular_file(library),
+                                   "AICPU bootstrap cache entry is incomplete: {}", dir.string());
+                });
+                return library;
+            }
 
-    write_file_sync(entry.path / "abi.hpp", abi_source);
-    write_file_sync(entry.path / "loader.cpp", device_source);
-    const std::vector<std::string> command = {
-        compiler.string(), "-std=c++17", "-O2", "-shared", "-fPIC", "-fvisibility=hidden",
-        (entry.path / "loader.cpp").string(), "-ldl", "-o", library.string(),
-    };
-    call_external_command(str::join(command));
-    DJ_HOST_ASSERT(std::filesystem::is_regular_file(library) and std::filesystem::file_size(library) > 0,
-                   "loader compiler did not produce the AICPU bootstrap library");
-    return entry.commit() / "libdeep_jit_aicpu_loader.so";
+            run_in_iothread([dir = entry.path] {
+                write_file_sync(dir / "abi.hpp", abi_source);
+                write_file_sync(dir / "loader.cpp", device_source);
+            });
+            const std::vector<std::string> command = {
+                compiler.string(), "-std=c++17", "-O2", "-shared", "-fPIC", "-fvisibility=hidden",
+                (entry.path / "loader.cpp").string(), "-ldl", "-o", library.string(),
+            };
+            call_external_command(str::join(command));
+            run_in_iothread([library] {
+                DJ_HOST_ASSERT(std::filesystem::is_regular_file(library) and std::filesystem::file_size(library) > 0,
+                               "loader compiler did not produce the AICPU bootstrap library");
+            });
+            return entry.commit() / "libdeep_jit_aicpu_loader.so";
+        } catch (const std::exception& error) {
+            if (detail::disable_cache_fallback())
+                throw;
+            entry.abandoned = dynamic_cast<const IOTimeoutError*>(&error) != nullptr or
+                              std::string_view(error.what()).find("command timed out") != std::string_view::npos;
+            cache.report_error(entry.root_index, error);
+            first_root = entry.root_index + 1;
+            if (first_root == cache.paths.size())
+                throw;
+        }
+    }
 }
 
 // Package the cached loader and deploy its library to the device filesystem.
