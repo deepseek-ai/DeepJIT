@@ -63,6 +63,8 @@ DeepJIT searches all roots in order and writes cache misses to the first usable 
 
 Cache filesystem operations run on an I/O worker with a separate timeout for each operation. Set `DJ_FS_TIMEOUT_MS` to change the default 10000 ms timeout; `0` disables it. Set `DJ_DISABLE_CACHE_FALLBACK=1` (default `0`) to run cache I/O directly on the calling thread without starting an I/O worker or falling back across cache roots. Both values are read once on first use. Queueing time and compiler subprocess execution are excluded. Compiler subprocesses use `posix_spawn` with a 5-minute default timeout and receive `SIGKILL` on timeout without blocking on reap. A timed-out worker is detached, and subsequent operations use a new worker. After three I/O timeouts, a root is skipped for the lifetime of that runtime. Timed-out operations leave their temporary directories in place because background I/O or compiler processes can still be using them. If every root fails, the request raises an error; existing in-memory cache hits remain usable.
 
+After `fork`, a child creates its own internal I/O worker rather than reusing the parent's. This only applies to the shared cache I/O helper; it does not make an inherited CUDA context or a user-created `ThreadExecutor` safe to use after `fork`.
+
 ## Repository layout
 
 | Path | Contents |

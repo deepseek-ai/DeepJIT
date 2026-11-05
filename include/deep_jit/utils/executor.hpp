@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <concepts>
@@ -14,11 +15,13 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <unistd.h>
 
 namespace deep_jit {
 
 namespace detail {
 inline thread_local bool in_iothread = false;
+inline thread_local pid_t iothread_pid = 0;
 }
 
 class IOTimeoutError : public std::runtime_error {
@@ -43,6 +46,7 @@ class ThreadExecutor {
 
     static void thread_main(std::shared_ptr<Context> ctx) {
         detail::in_iothread = true;
+        detail::iothread_pid = ::getpid();
         while (true) {
             std::unique_lock<std::mutex> lock(ctx->lock);
             ctx->cv.wait(lock, [&] { return ctx->stopped or ctx->task.valid(); });
@@ -147,7 +151,46 @@ public:
 namespace detail {
 
 // Initialize before global JIT handles so their workers can use IO during shutdown.
-inline ThreadExecutor io_executor;
+// A forked child cannot use the parent's worker or any inherited mutexes.
+// Publish process-owned state through a lock-free pointer so the first child
+// caller can replace it without touching the inherited executor. The old
+// state is deliberately left alone in the child: it may contain a locked
+// mutex or a std::thread referring to a thread that no longer exists.
+class ProcessIOExecutor {
+    struct State {
+        const pid_t pid;
+        ThreadExecutor executor;
+        explicit State(pid_t pid) : pid(pid) {}
+    };
+
+    static_assert(std::atomic<State*>::is_always_lock_free);
+    std::atomic<State*> state{nullptr};
+
+public:
+    constexpr ProcessIOExecutor() = default;
+    ~ProcessIOExecutor() {
+        auto* current = state.load(std::memory_order_acquire);
+        if (current != nullptr and current->pid == ::getpid())
+            delete current;
+    }
+
+    ThreadExecutor& get() {
+        const auto pid = ::getpid();
+        auto* current = state.load(std::memory_order_acquire);
+        while (current == nullptr or current->pid != pid) {
+            auto next = std::make_unique<State>(pid);
+            if (state.compare_exchange_strong(current, next.get(), std::memory_order_acq_rel))
+                return next.release()->executor;
+        }
+        return current->executor;
+    }
+};
+
+inline constinit ProcessIOExecutor process_io_executor;
+
+inline ThreadExecutor& io_executor() {
+    return process_io_executor.get();
+}
 
 inline std::chrono::milliseconds io_timeout() {
     static const auto timeout = [] {
@@ -183,9 +226,9 @@ inline bool disable_cache_fallback() {
 // execute directly on the worker under the outer operation's timeout.
 template<typename F>
 auto run_in_iothread(F&& f) -> std::invoke_result_t<std::decay_t<F>&> {
-    if (detail::in_iothread or detail::disable_cache_fallback())
+    if ((detail::in_iothread and detail::iothread_pid == ::getpid()) or detail::disable_cache_fallback())
         return std::invoke(f);
-    return detail::io_executor.run(std::forward<F>(f), detail::io_timeout());
+    return detail::io_executor().run(std::forward<F>(f), detail::io_timeout());
 }
 
 } // namespace deep_jit
