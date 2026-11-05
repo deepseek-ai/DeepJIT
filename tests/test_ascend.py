@@ -81,6 +81,37 @@ def validate_header_self_containment(temporary_dir, include_paths):
     print(f'validated {len(headers)} self-contained Ascend/public headers', flush=True)
 
 
+def validate_launch_attributes(temporary_dir, include_paths):
+    directory = temporary_dir / 'launch_attributes'
+    stream_header = directory / 'include/torch_npu/csrc/core/npu/NPUStream.h'
+    stream_header.parent.mkdir(parents=True)
+    stream_header.write_text(
+        '#pragma once\n#include <stdexcept>\n#include <acl/acl.h>\n'
+        'namespace c10_npu { inline aclrtStream getCurrentNPUStream() { '
+        'throw std::runtime_error("test requires an explicit stream"); } }\n'
+    )
+    source = TEST_ASCEND_PROJECT / 'launch_attributes.cpp'
+    flags = ['-std=c++20', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
+             '-DDJ_DISABLE_GIL=1', f'-I{directory / "include"}']
+    flags.extend(f'-I{path}' for path in include_paths)
+    for extra_flags, output in [
+        (['-DDEEP_JIT_RECORD_LAUNCH', '-shared', '-fPIC'], directory / 'libascendcl.so'),
+        (['-ldl'], directory / 'launch_attributes'),
+    ]:
+        result = subprocess.run(
+            ['c++', *flags, str(source), *extra_flags, '-o', str(output)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    env = os.environ.copy()
+    env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, [str(directory), env.get('LD_LIBRARY_PATH')]))
+    result = subprocess.run(
+        [str(directory / 'launch_attributes')], env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout, end='', flush=True)
+
+
 def validate_lazy_import(module_path, temporary_dir):
     code = '''
 import importlib.util
@@ -347,6 +378,7 @@ def run_worker():
         os.environ['ASCEND_HOME_PATH'] = str(ascend_home)
         os.environ.setdefault('MAX_JOBS', '8')
 
+        validate_launch_attributes(temporary_dir, include_paths)
         torch_npu.npu.set_device(0)
         extra_ldflags = []
         for library_path in library_paths:
