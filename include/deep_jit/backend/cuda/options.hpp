@@ -134,8 +134,13 @@ struct CompilerOptions {
     }
 
     void update_hash(hash::FNV1a& hasher) const {
-        // Keep the established CUDA cache-key representation unchanged.
+        // Keep existing keys when checks are disabled. Warning flags alone do
+        // not capture whether a diagnostic must reject the compilation.
         hasher.update(str::join(get_flags()));
+        if (check_no_spills.value_or(false))
+            hasher.update("check_no_spills");
+        if (check_no_local_memory.value_or(false))
+            hasher.update("check_no_local_memory");
     }
 
     [[nodiscard]] std::string get_post_hook_hash(const Config& config) const {
