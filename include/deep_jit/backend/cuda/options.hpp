@@ -52,8 +52,12 @@ struct CompilerOptions {
             .arch = device.get_arch(),
             .nvcc_flags = std::vector<std::string> {
                 std::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
+#if defined(_WIN32)
+                "--compiler-options=/MD,/Zc:preprocessor,/Zc:__cplusplus",
+#else
                 "--compiler-options=-fPIC",
                 "--compiler-options=-fconcepts",
+#endif
                 "--expt-relaxed-constexpr",
                 "--expt-extended-lambda",
             },
@@ -100,7 +104,13 @@ struct CompilerOptions {
         // Optimization level
         DJ_HOST_ASSERT(optimize_level.has_value() and not optimize_level->empty(), "optimization level must be specified");
         flags.emplace_back("-O" + *optimize_level);
+#if defined(_WIN32)
+        const auto host_optimize_level = *optimize_level == "3" ? "2" : *optimize_level;
+        flags.emplace_back("--compiler-options=" +
+            (*optimize_level == "0" ? std::string("/Od") : "/O" + host_optimize_level));
+#else
         flags.emplace_back("--compiler-options=-O" + *optimize_level);
+#endif
 
         // Global fast-math
         if (fast_math.value_or(false))
@@ -143,7 +153,7 @@ struct CompilerOptions {
             return "";
 
         // Check cache hit
-        thread_local std::unordered_map<std::string, std::string> post_hook_hashes;
+        thread_local std::unordered_map<std::filesystem::path, std::string> post_hook_hashes;
         const auto path = config.get_python_path(*post_hook);
         if (const auto iterator = post_hook_hashes.find(path); iterator != post_hook_hashes.end())
             return iterator->second;

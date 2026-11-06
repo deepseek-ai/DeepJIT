@@ -5,7 +5,11 @@
 #include <random>
 #include <string>
 #include <thread>
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace deep_jit {
 
@@ -19,7 +23,12 @@ inline std::string get_uuid() {
             static_cast<std::mt19937::result_type>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     }());
     thread_local std::uniform_int_distribution<uint32_t> distribution;
-    return std::format("{}-{:08x}-{:08x}-{:08x}", ::getpid(), distribution(generator), distribution(generator), distribution(generator));
+#if defined(_WIN32)
+    const auto pid = ::_getpid();
+#else
+    const auto pid = ::getpid();
+#endif
+    return std::format("{}-{:08x}-{:08x}-{:08x}", pid, distribution(generator), distribution(generator), distribution(generator));
 }
 
 }  // namespace deep_jit

@@ -54,11 +54,17 @@ public:
                 fsync_dir(source, shared);
                 make_dirs(target.parent_path(), shared);
                 std::error_code error;
+#if defined(_WIN32)
+                if (not ::MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
+                    error = std::error_code(::GetLastError(), std::system_category());
+#else
                 std::filesystem::rename(source, target, error);
+#endif
                 if (error) {
+                    std::error_code lookup_error;
                     if ((error != std::errc::file_exists and error != std::errc::directory_not_empty) or
-                        not std::filesystem::exists(target / kCommitFileName))
-                        DJ_PANIC("cache rename failed: {}", error.message());
+                        not std::filesystem::is_regular_file(target / kCommitFileName, lookup_error))
+                        DJ_PANIC("failed to publish cache entry: {}: {}", target.string(), error.message());
                     safe_remove_all(source);
                 }
             });
@@ -98,19 +104,23 @@ public:
 
     void report_error(size_t root, const std::exception& error) const {
         std::fprintf(stderr, "DeepJIT cache warning: %s: %s; trying next root\n",
-                     paths[root].c_str(), error.what());
+                     paths[root].string().c_str(), error.what());
         if (dynamic_cast<const IOTimeoutError*>(&error) and ++num_timeouts[root] == 3)
             std::fprintf(stderr, "DeepJIT cache warning: %s: disabled after 3 IO timeouts\n",
-                         paths[root].c_str());
+                         paths[root].string().c_str());
     }
 
     static DiskCache from_env(const Env& env) {
-        // Parse roots in preference order. Later roots also serve as write fallbacks.
+        // Parse platform-separated roots in preference order, including write fallbacks.
         std::vector<std::filesystem::path> paths;
         if (const auto env_opt = env.get<std::string>("JIT_CACHE_DIR")) {
             size_t begin = 0;
             while (true) {
+#if defined(_WIN32)
+                const auto end = env_opt->find(';', begin);
+#else
                 const auto end = env_opt->find(':', begin);
+#endif
                 const auto item = env_opt->substr(begin, end - begin);
                 DJ_HOST_ASSERT(not item.empty(), "disk cache path list contains an empty path: {}", env_opt.value());
                 paths.emplace_back(item);
@@ -119,8 +129,14 @@ public:
                 begin = end + 1;
             }
         } else {
-            const auto home = get_env<std::string>("HOME");
+            auto home = get_env<std::string>("HOME");
+#if defined(_WIN32)
+            if (home.empty())
+                home = get_env<std::string>("USERPROFILE");
+            DJ_HOST_ASSERT(not home.empty(), "HOME or USERPROFILE environment variable must not be empty");
+#else
             DJ_HOST_ASSERT(not home.empty(), "HOME environment variable must not be empty");
+#endif
             paths.emplace_back(std::filesystem::path(home) / ".dj");
         }
 
