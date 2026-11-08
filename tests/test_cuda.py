@@ -11,6 +11,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import pybind11
 import torch
 from torch.utils.cpp_extension import CUDA_HOME, load
 
@@ -205,8 +206,10 @@ def validate_header_self_containment(temporary_dir):
     assert CUDA_HOME is not None
     include_root = ROOT / 'include'
     torch_include = Path(torch.__file__).resolve().parent / 'include'
+    # PyTorch's bundled pybind11 headers reject TORCH_TARGET_VERSION.
     include_paths = [
         include_root,
+        Path(pybind11.get_include()),
         torch_include,
         torch_include / 'torch' / 'csrc' / 'api' / 'include',
         Path(sysconfig.get_paths()['include']),
@@ -792,7 +795,7 @@ def run_worker():
                 '-Wno-attributes', '-Wno-missing-field-initializers',
                 '-Wno-psabi', '-Wno-deprecated-declarations',
             ],
-            extra_include_paths=[str(ROOT / 'include')],
+            extra_include_paths=[str(ROOT / 'include'), pybind11.get_include()],
             extra_ldflags=['-ldl'],
             build_directory=str(build_dir),
             with_cuda=True,
