@@ -22,7 +22,7 @@ def test_precompiler_runtime():
         subprocess.run([executable, str(target / 'native-cache')], check=True, timeout=30)
 
         extension = target / ('_deepjit_precompiler_test' + sysconfig.get_config_var('EXT_SUFFIX'))
-        subprocess.run([*common, '-shared', '-fPIC', '-I', pybind11.get_include(),
+        subprocess.run([*common, '-shared', '-fPIC', '-fvisibility=hidden', '-I', pybind11.get_include(),
                         '-I', sysconfig.get_path('include'),
                         str(root / 'tests/test_precompiler_binding.cpp'), '-ldl',
                         '-o', str(extension)], check=True, timeout=90)
