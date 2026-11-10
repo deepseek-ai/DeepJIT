@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <future>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -57,6 +58,25 @@ void test_empty_and_automatic_finish() {
     assert(calls == 1);
 }
 
+void test_concurrent_finish_and_enqueue() {
+    for (int i = 0; i < 8; ++i) {
+        std::atomic<int> calls = 0;
+        deep_jit::Precompiler precompiler(2);
+        precompiler.enqueue("first", [&] { ++calls; });
+        auto first = std::async(std::launch::async, [&] { precompiler.finish(); });
+        auto second = std::async(std::launch::async, [&] { precompiler.finish(); });
+        bool accepted = true;
+        try {
+            precompiler.enqueue("second", [&] { ++calls; });
+        } catch (const std::logic_error&) {
+            accepted = false;
+        }
+        first.get();
+        second.get();
+        assert(calls == 1 + static_cast<int>(accepted));
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 and std::string_view(argv[1]) == "unobserved-failure") {
         deep_jit::Precompiler precompiler(1);
@@ -66,4 +86,5 @@ int main(int argc, char** argv) {
     test_finish_success();
     test_finish_failure();
     test_empty_and_automatic_finish();
+    test_concurrent_finish_and_enqueue();
 }

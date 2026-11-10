@@ -18,15 +18,15 @@
 
 namespace deep_jit {
 
-// One producer submits requests; workers only consume jobs. The producer owns
-// submitted, so deduplication needs no lock. Destruction drains the queue and
-// exits with failure if compilation failed.
+// Submissions and stopping share the queue mutex; workers only consume jobs.
+// Destruction drains the queue and exits with failure if compilation failed.
 class Precompiler {
     using Job = std::packaged_task<void()>;
 
     std::unordered_set<std::string> submitted;
     std::vector<std::future<void>> results;
     std::mutex mutex;
+    std::mutex finish_mutex;
     std::condition_variable cv;
     std::deque<Job> jobs;
     std::vector<std::thread> workers;
@@ -115,28 +115,30 @@ public:
 
     template <typename F>
     void enqueue(const std::string& key, F&& function) {
-        if (stopping)
-            throw std::logic_error("cannot enqueue after precompilation has finished");
-        const auto [position, inserted] = submitted.insert(key);
-        if (not inserted)
-            return;
-        try {
-            // NOTE: Monitor memory usage; futures may retain task captures until finish().
-            Job job(std::forward<F>(function));
+        {
             const std::lock_guard lock(mutex);
-            results.push_back(job.get_future());
+            if (stopping)
+                throw std::logic_error("cannot enqueue after precompilation has finished");
+            const auto [position, inserted] = submitted.insert(key);
+            if (not inserted)
+                return;
             try {
-                jobs.push_back(std::move(job));
+                // NOTE: Monitor memory usage; futures may retain task captures until finish().
+                Job job(std::forward<F>(function));
+                results.push_back(job.get_future());
+                try {
+                    jobs.push_back(std::move(job));
+                } catch (...) {
+                    results.pop_back();
+                    throw;
+                }
+                if (results.size() == 1)
+                    start_time = std::chrono::steady_clock::now();
+                print_progress();
             } catch (...) {
-                results.pop_back();
+                submitted.erase(position);
                 throw;
             }
-            if (results.size() == 1)
-                start_time = std::chrono::steady_clock::now();
-            print_progress();
-        } catch (...) {
-            submitted.erase(position);
-            throw;
         }
         cv.notify_one();
     }
@@ -144,6 +146,7 @@ public:
     // Join all workers, then report the first error in submission order.
     // Repeated calls return or rethrow the same error without consuming futures again.
     void finish() {
+        const std::lock_guard finish_lock(finish_mutex);
         if (finished) {
             if (failure)
                 std::rethrow_exception(failure);

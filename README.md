@@ -199,7 +199,7 @@ Set `MYLIB_JIT_DRY_RUN=1` before constructing the runtime to enqueue `compile()`
 
 After submitting the desired kernels, call `jit->finish_precompilation()` in C++ or `jit.finish_precompilation()` on the object returned by Python's `get_jit()`. It waits for all queued compilations and throws the first failure in submission order. Repeated calls return or rethrow the same failure. This is a terminal operation: later calls to the kernel-returning `compile()` overload in dry-run mode raise an error. A call in normal mode is a no-op; `compile_without_load()` remains synchronous.
 
-Submit work and finish it from the same producer thread; concurrent producers are not supported. Without an explicit call, runtime destruction still waits and terminates the process if a compilation failed.
+Submit work from one producer and finish after submissions have stopped; concurrent producers are not supported. Concurrent finish calls are serialized. Without an explicit call, runtime destruction still waits and terminates the process if a compilation failed.
 
 ## CUDA
 

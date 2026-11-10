@@ -37,12 +37,22 @@ deadline = time.monotonic() + 5
 while not module.started():
     assert time.monotonic() < deadline
     time.sleep(0.01)
+jit = module.get_jit()
+errors = []
+def finish_again():
+    try:
+        jit.finish_precompilation()
+    except Exception as error:
+        errors.append(str(error))
+other = threading.Thread(target=finish_again)
+other.start()
 thread = threading.Thread(target=lambda: (time.sleep(0.05), module.release()))
 thread.start()
-jit = module.get_jit()
 jit.finish_precompilation()
 thread.join(timeout=5)
+other.join(timeout=5)
 assert not thread.is_alive()
+assert not other.is_alive() and not errors
 assert module.calls() == 1
 jit.finish_precompilation()
 try:
