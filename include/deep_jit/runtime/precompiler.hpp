@@ -31,6 +31,8 @@ class Precompiler {
     std::deque<Job> jobs;
     std::vector<std::thread> workers;
     bool stopping = false;
+    bool finished = false;
+    std::exception_ptr failure;
     size_t num_completed = 0;
     std::chrono::steady_clock::time_point start_time;
 
@@ -97,6 +99,8 @@ public:
     }
 
     ~Precompiler() {
+        if (finished)
+            return;
         try {
             finish();
             return;
@@ -112,7 +116,7 @@ public:
     template <typename F>
     void enqueue(const std::string& key, F&& function) {
         if (stopping)
-            return;
+            throw std::logic_error("cannot enqueue after precompilation has finished");
         const auto [position, inserted] = submitted.insert(key);
         if (not inserted)
             return;
@@ -137,16 +141,31 @@ public:
         cv.notify_one();
     }
 
-    // Call once: join all workers, then report the first error in submission order.
+    // Join all workers, then report the first error in submission order.
+    // Repeated calls return or rethrow the same error without consuming futures again.
     void finish() {
+        if (finished) {
+            if (failure)
+                std::rethrow_exception(failure);
+            return;
+        }
         stop_and_join();
-        for (auto& result: results)
-            result.get();
+        for (auto& result: results) {
+            try {
+                result.get();
+            } catch (...) {
+                if (not failure)
+                    failure = std::current_exception();
+            }
+        }
+        finished = true;
         if (not results.empty()) {
             print_progress();
             std::fputc('\n', stderr);
             std::fflush(stderr);
         }
+        if (failure)
+            std::rethrow_exception(failure);
     }
 };
 
