@@ -28,10 +28,13 @@ int main(int argc, char** argv) {
             runtime.compile("late", "later");
             assert(false && "compile after finish should fail");
         } catch (const std::logic_error&) {}
+        const auto path = runtime.compile_without_load("sync", "synchronous");
+        assert(std::filesystem::exists(path / "kernel"));
     }
 
     ::setenv("TEST_JIT_DRY_RUN", "0", 1);
     precompiler_test::Runtime normal(deep_jit::Config(root, "TEST"));
     normal.finish_precompilation();
     normal.finish_precompilation();
+    assert(normal.compile("normal", "normal mode") != nullptr);
 }
