@@ -193,6 +193,14 @@ jit = my_library._C.get_jit()
 
 Calling `get_jit()` initializes the lazy runtime if it has not already been initialized.
 
+### Completing asynchronous precompilation
+
+Set `MYLIB_JIT_DRY_RUN=1` before constructing the runtime to enqueue `compile()` calls for background compilation instead of loading or launching kernels. `MYLIB_JIT_COMPILE_THREADS` selects the worker count; it must be positive and defaults to the available CPU count (or one if unavailable). The equivalent `DJ_` variables set process-wide defaults.
+
+After submitting the desired kernels, call `jit->finish_precompilation()` in C++ or `jit.finish_precompilation()` on the object returned by Python's `get_jit()`. It waits for all queued compilations and throws the first failure in submission order. Repeated calls return or rethrow the same failure. This is a terminal operation: later calls to the kernel-returning `compile()` overload in dry-run mode raise an error. A call in normal mode is a no-op; `compile_without_load()` remains synchronous.
+
+Submit work from one producer and finish after submissions have stopped; concurrent producers are not supported. Concurrent finish calls are serialized. Without an explicit call, runtime destruction still waits and terminates the process if a compilation failed.
+
 ## CUDA
 
 The CUDA backend requires CUDA headers 12.4 or newer and NVCC 12.9 or newer. It uses NVCC to generate a CUBIN. Loading through `compile()` requires exactly one CUDA kernel; `compile_without_load()` only builds the artifact and does not perform that check.
