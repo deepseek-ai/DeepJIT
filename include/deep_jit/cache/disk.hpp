@@ -20,6 +20,15 @@ namespace deep_jit {
 
 inline constexpr std::string_view kCommitFileName = ".committed";
 
+inline void validate_cache_tag(const std::string& tag) {
+    const auto is_valid_char = [](const char& c) {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+               (c >= '0' and c <= '9') or c == '_';
+    };
+    DJ_HOST_ASSERT(not tag.empty() and std::ranges::all_of(tag, is_valid_char),
+                   "cache tag must contain only letters, digits, or underscores: {}", tag);
+}
+
 // One disk-cache slot. On a miss the entry points at a private temporary
 // directory; commit() publishes it atomically (whole-directory rename) after
 // fsync, so concurrent processes on (distributed) filesystems observe either
@@ -128,12 +137,7 @@ public:
     }
 
     [[nodiscard]] DiskCacheEntry entry(const std::string& tag, const std::string& digest, size_t first_root = 0) const {
-        const auto is_valid_char = [](const char& c) {
-            return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                   (c >= '0' and c <= '9') or c == '_';
-        };
-        DJ_HOST_ASSERT(not tag.empty() and std::ranges::all_of(tag, is_valid_char),
-                       "cache tag must contain only letters, digits, or underscores: {}", tag);
+        validate_cache_tag(tag);
 
         // Lookup failures must not be retried as writes in this attempt.
         std::vector<size_t> failed;
