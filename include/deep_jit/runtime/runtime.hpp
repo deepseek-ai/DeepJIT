@@ -81,6 +81,14 @@ public:
         return compile_impl<false>(name, source, cache_key(source, options), options);
     }
 
+    // Finish a dry run before teardown; in normal mode there is nothing to wait for.
+    void finish_precompilation() {
+        if (precompiler) {
+            [[maybe_unused]] GilScopedRelease gil_release;
+            precompiler->finish();
+        }
+    }
+
     std::filesystem::path compile(const std::string& name, const std::string& source,
                                   const std::string& key, const CompilerOptions& options) const {
         return compile_impl<false>(name, source, key, options);

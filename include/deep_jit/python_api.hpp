@@ -11,7 +11,9 @@ namespace deep_jit {
 
 template <typename Backend>
 inline void register_python_api(pybind11::module_& module, LazyInit<Runtime<Backend>>& jit) {
-    pybind11::class_<Runtime<Backend>, std::shared_ptr<Runtime<Backend>>>(module, "Runtime", pybind11::module_local());
+    pybind11::class_<Runtime<Backend>, std::shared_ptr<Runtime<Backend>>>(module, "Runtime", pybind11::module_local())
+        .def("finish_precompilation", &Runtime<Backend>::finish_precompilation,
+             "Wait for queued dry-run compilations and report failures.");
 
     // Help the user library to export some functions to do warmup
     module.def("get_jit", [&jit]() {
