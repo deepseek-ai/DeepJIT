@@ -7,14 +7,13 @@ namespace deep_jit::ascend::aicpu {
 // Host helper that packages and deploys the cached loader with a private CANN package configuration.
 inline constexpr std::string_view helper_source = R"DJPY(
 import ctypes
+import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import tarfile
-import uuid
 
 
 def overlay(source, destination, private):
@@ -25,16 +24,26 @@ def overlay(source, destination, private):
                 (destination / child.name).symlink_to(child)
 
 
+def normalize_metadata(info):
+    # Device package loading compares the whole archive, so metadata must not change.
+    info.uid = info.gid = info.mtime = 0
+    info.uname = info.gname = ''
+    info.mode = 0o755 if info.isdir() else 0o644
+    return info
+
+
 def main():
     cann, state, loader = (Path(value) for value in sys.argv[1:4])
     device, entry = int(sys.argv[4]), sys.argv[5]
     shadow = state / 'shadow'
-    name = 'deep_jit_aicpu_' + uuid.uuid4().hex
+    payload = loader.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    # Share one immutable deployment for this loader image across processes.
+    name = 'deep_jit_aicpu_' + digest[:16]
     library = 'lib' + name + '.so'
     stage = shadow / 'build/aicpu_kernels_device'
     stage.mkdir(parents=True)
-    shutil.copyfile(loader, stage / library)
-    digest = hashlib.sha256((stage / library).read_bytes()).hexdigest()
+    (stage / library).write_bytes(payload)
     (stage / 'bin_hash.cfg').write_text(f'{library}={digest}\n')
 
     # Reuse the installed toolkit while keeping package and operator configs private.
@@ -44,8 +53,17 @@ def main():
     overlay(cann / 'opp/vendors', shadow / 'opp/vendors', {name})
     package_dir = Path('opp/vendors') / name / 'aicpu/kernel'
     (shadow / package_dir).mkdir(parents=True)
-    with tarfile.open(shadow / package_dir / (name + '.tar.gz'), 'w:gz') as archive:
-        archive.add(stage, arcname=stage.name)
+    package = shadow / package_dir / (name + '.tar.gz')
+    with (
+        package.open('wb') as raw,
+        gzip.GzipFile(
+            fileobj=raw, filename='', mode='wb', compresslevel=9, mtime=0,
+        ) as compressed,
+        tarfile.open(
+            fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT,
+        ) as archive,
+    ):
+        archive.add(stage, arcname=stage.name, filter=normalize_metadata)
     manifest = (cann / 'conf/ascend_package_load.ini').read_text().rstrip() + '\n'
     manifest += (f'name:{name}.tar.gz\ninstall_path:2\noptional:true\n'
                  f'package_path:{package_dir}\nload_as_per_soc:false\n')

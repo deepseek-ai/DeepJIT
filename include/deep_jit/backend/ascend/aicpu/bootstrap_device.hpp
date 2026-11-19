@@ -65,18 +65,6 @@ uint64_t load(const abi::LoaderRequest& request) {
     return reinterpret_cast<uint64_t>(module.release());
 }
 
-void remove_bootstrap() {
-    Dl_info info{};
-    if (not dladdr(reinterpret_cast<void*>(&remove_bootstrap), &info) or info.dli_fname == nullptr)
-        throw std::runtime_error("cannot locate AICPU bootstrap");
-    const char* name = std::strrchr(info.dli_fname, '/');
-    if (name == nullptr or std::strncmp(name + 1, "libdeep_jit_aicpu_", 17) != 0)
-        throw std::runtime_error("unexpected AICPU bootstrap path");
-    // Unlink the deployed file; the scheduler process can keep executing its mapped code.
-    if (unlink(info.dli_fname) != 0 and errno != ENOENT)
-        throw std::runtime_error("cannot remove AICPU bootstrap");
-}
-
 void publish(abi::LoaderResult* output, const abi::LoaderResult& result) {
     *output = result;
     // Clean the result's cache lines before the Host copies it from device memory.
@@ -112,9 +100,6 @@ extern "C" __attribute__((visibility("default"))) uint32_t deep_jit_aicpu_loader
                 break;
             case abi::Operation::Unload:
                 delete reinterpret_cast<Module*>(header.module);
-                break;
-            case abi::Operation::RemoveBootstrap:
-                remove_bootstrap();
                 break;
             default:
                 throw std::runtime_error("unknown AICPU loader operation");
