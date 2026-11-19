@@ -204,11 +204,10 @@ class AicpuBootstrap {
     mutable bool loader_healthy = true;
 
     void release() noexcept {
-        try {
-            if (loader_handle != nullptr and loader_healthy)
-                execute({.header = {.operation = aicpu::Operation::RemoveBootstrap}});
-        } catch (...) {
-        }
+        // We intentionally skip unlinking loader.so from the device filesystem to prevent
+        // concurrency issues. The upside is that all processes using this device share the
+        // loader.so and prevent exhaustion of TSD resources. The downside is that loader.so
+        // will remain in the device filesystem till the next reset.
         try {
             if (loader_stream != nullptr)
                 driver::lazy_aclrtSynchronizeStream(loader_stream);

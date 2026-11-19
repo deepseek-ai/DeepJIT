@@ -14,7 +14,7 @@ namespace deep_jit::ascend::aicpu {
 DJ_AICPU_ABI(
 inline constexpr const char* entry = "deep_jit_aicpu_loader_v1";
 
-enum class Operation : uint64_t { Load, Invoke, Unload, RemoveBootstrap };
+enum class Operation : uint64_t { Load, Invoke, Unload };
 
 struct alignas(16) RequestHeader {
     Operation operation = Operation::Load;
