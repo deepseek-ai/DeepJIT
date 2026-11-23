@@ -165,12 +165,23 @@ def _extract_cpp_ast_metadata(
         name = cls.child_by_field_name('name') if cls is not None else None
         return text(name) if name is not None else None
 
-    def find_template_fn(node):
-        if node is None or node.type == 'template_function':
+    def find_template_node(node):
+        if node is None or node.type in ('template_function', 'template_type'):
             return node
-        return next((r for c in node.named_children if (r := find_template_fn(c)) is not None), None)
+        return next((r for c in node.named_children if (r := find_template_node(c)) is not None), None)
 
-    def class_chain_info(call_node) -> tuple[str, str] | None:
+    def parse_class_binding(type_or_fn, cargs) -> tuple[str, str] | None:
+        tf = find_template_node(type_or_fn)
+        if tf is None or text(tf.child_by_field_name('name')).split('::')[-1] != 'class_':
+            return None
+        targs = tf.child_by_field_name('arguments')
+        if not targs or not targs.named_children or not cargs:
+            return None
+        cpp_cls = _strip_template_args(text(targs.named_children[0])).split('::')[-1].strip()
+        py_cls = next((text(a).strip('"') for a in cargs.named_children if a.type == 'string_literal'), cpp_cls)
+        return py_cls, cpp_cls
+
+    def class_chain_info(call_node, class_vars: dict[tuple[int | None, str], tuple[str, str] | None]) -> tuple[str, str] | None:
         cur = call_node
         while True:
             fn = cur.child_by_field_name('function')
@@ -181,21 +192,48 @@ def _extract_cpp_ast_metadata(
             if inner is not None and inner.type == 'field_expression':
                 cur = obj
                 continue
+            if obj.type == 'identifier':
+                scope_node = has_ancestor(obj, ('function_definition',))
+                scope_id = scope_node.id if scope_node is not None else None
+                binding = class_vars.get((scope_id, text(obj)))
+                if binding is not None:
+                    return binding
+                return class_vars.get((None, text(obj)))
             if obj.type != 'call_expression':
                 return None
-            tf = find_template_fn(obj.child_by_field_name('function'))
-            if tf is None or text(tf.child_by_field_name('name')).split('::')[-1] != 'class_':
-                return None
-            targs, cargs = tf.child_by_field_name('arguments'), obj.child_by_field_name('arguments')
-            if not targs or not targs.named_children or not cargs:
-                return None
-            cpp_cls = _strip_template_args(text(targs.named_children[0])).split('::')[-1].strip()
-            py_cls = next((text(a).strip('"') for a in cargs.named_children if a.type == 'string_literal'), cpp_cls)
-            return py_cls, cpp_cls
+            return parse_class_binding(obj.child_by_field_name('function'), obj.child_by_field_name('arguments'))
 
     roots = [parser.parse(p.read_bytes()).root_node
              for p in sorted(csrc_root.rglob('*')) if p.is_file() and p.suffix.lower() in CPP_EXTS]
     known_classes = {text(m['name'][0]) for root in roots for m in run_query(q_class, root)}
+
+    # Local variables holding a py::class_ binding — `auto c = py::class_<T>(m, "Py");`
+    # (the value is a call_expression) and `py::class_<T> c(m, "Py");` (the type carries
+    # the template and the value is the constructor argument_list) — so that later
+    # `c.def(...)` calls resolve like a chained binding. Keys are the enclosing function
+    # and the variable name; the (None, name) entry serves file-scope bindings.
+    q_var_call = Query(lang, '(init_declarator declarator: (identifier) @name value: (call_expression) @val)')
+    q_var_type = Query(
+        lang,
+        '(declaration type: (qualified_identifier) @dtype declarator: (init_declarator declarator: (identifier) @name value: (argument_list) @val))',
+    )
+    class_vars: dict[tuple[int | None, str], tuple[str, str] | None] = {}
+
+    def record_class_var(name_node, binding: tuple[str, str] | None) -> None:
+        if binding is None:
+            return
+        fn_node = has_ancestor(name_node, ('function_definition',))
+        key = (fn_node.id if fn_node is not None else None, text(name_node))
+        if class_vars.setdefault(key, binding) != binding:
+            class_vars[key] = None  # the name is bound to different classes; leave unresolved
+
+    for root in roots:
+        for m in run_query(q_var_call, root):
+            val = m['val'][0]
+            record_class_var(m['name'][0], parse_class_binding(
+                val.child_by_field_name('function'), val.child_by_field_name('arguments')))
+        for m in run_query(q_var_type, root):
+            record_class_var(m['name'][0], parse_class_binding(m['dtype'][0], m['val'][0]))
 
     cpp_funcs: dict[CppKey, CppMeta] = {}
     ambiguous: set[CppKey] = set()
@@ -249,10 +287,28 @@ def _extract_cpp_ast_metadata(
             args = [c for c in args_node.named_children if c.type != 'comment']
             if not args:
                 continue
-            cls_info = class_chain_info(args_node.parent)
+            cls_info = class_chain_info(args_node.parent, class_vars)
             py_cls = cls_info[0] if cls_info else None
             if cls_info:
                 py_cls_to_cpp[cls_info[0]] = cls_info[1]
+            if args[0].type == 'call_expression':
+                # .def(py::init(...), ...): a lambda constructor. pybind11-stubgen has no
+                # C++ names for it, so record the lambda's parameter names under __init__.
+                fn_node = args[0].child_by_field_name('function')
+                fn_text = text(fn_node) if fn_node is not None else ''
+                if 'overload_cast' not in fn_text and _strip_template_args(fn_text).split('::')[-1] == 'init':
+                    init_args_node = args[0].child_by_field_name('arguments')
+                    lambdas = [c for c in (init_args_node.named_children if init_args_node is not None else ())
+                               if c.type == 'lambda_expression']
+                    if lambdas and py_cls is not None:
+                        ldecl = lambdas[0].child_by_field_name('declarator')
+                        pnames = param_names_from(ldecl.child_by_field_name('parameters') if ldecl else None)
+                        doc = next((text(a).strip('"') for a in args[1:] if a.type == 'string_literal'), None)
+                        record((py_cls, '__init__', len(pnames)), pnames,
+                               doc or _extract_doc(lambdas[0], climb=False))
+                # py::init<Type>() carries no lambda; the C++ constructor recorded by the
+                # function query covers it through (cpp_cls, '__init__', argc).
+                continue
             if args[0].type != 'string_literal' or len(args) < 2:
                 continue
             py_name, target = text(args[0]).strip('"'), args[1]
@@ -364,6 +420,19 @@ def _postprocess_pyi(
             )
         if meta is None:
             meta = cpp_funcs.get((cpp_cls, fn_name, argc)) or cpp_funcs.get((current_class, fn_name, argc))
+        if meta is None and offset == 1:
+            # A free function bound as an instance method takes the receiver as its first
+            # C++ parameter, which the visible signature drops; retry with it.
+            candidates: list[tuple[str | None, str]] = []
+            if (current_class, fn_name) in py_to_cpp:
+                t_scope, t_name = py_to_cpp[(current_class, fn_name)]
+                candidates += [(t_scope, t_name), (None, t_name)]
+            candidates += [(cpp_cls, fn_name), (None, fn_name)]
+            for scope, name in candidates:
+                free = cpp_funcs.get((scope, name, argc + 1))
+                if free is not None and free[0] is not None and len(free[0]) == argc + 1:
+                    meta = (free[0][1:], free[1])
+                    break
 
         if meta and meta[0] is not None and re.search(r'\barg0\s*:', params_str):
             c_names = meta[0]
