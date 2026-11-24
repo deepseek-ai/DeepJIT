@@ -2615,6 +2615,13 @@ void test_compiler_options(Runtime& runtime) {
     check_metadata(artifact, "test-signature", "-DTEST_OPTION=17");
     DJ_HOST_ASSERT(launch_value(runtime, runtime.compile("compiler_options", source, overrides)) == 17,
                    "compiler option was not applied");
+    auto strict = overrides;
+    strict.check_no_spills = true;
+    strict.check_no_local_memory = true;
+    const auto strict_kernel = runtime.compile("strict_compiler_options", source, strict);
+    DJ_HOST_ASSERT(launch_value(runtime, strict_kernel) == 17, "strict compilation changed the result");
+    DJ_HOST_ASSERT(runtime.compile("strict_compiler_options", source, strict) == strict_kernel,
+                   "successful strict compilation did not reuse the memory cache");
 }
 
 void test_cache_key_option_matrix(Runtime& runtime) {
@@ -2631,6 +2638,31 @@ void test_cache_key_option_matrix(Runtime& runtime) {
     expected_hash.update(runtime.default_compiler_options.get_post_hook_hash(runtime.config));
     expected_hash.update(runtime.parser.parse_into_hash(source));
     DJ_HOST_ASSERT(default_key == expected_hash.get_hex_digest(), "cache key components were combined in the wrong order");
+
+    // Warning flags alone do not distinguish diagnostic-only compilation from
+    // requests that must reject spills, local memory, or both.
+    for (int policy = 1; policy < 4; ++policy) {
+        auto strict = runtime.default_compiler_options;
+        strict.check_no_spills = (policy & 1) != 0;
+        strict.check_no_local_memory = (policy & 2) != 0;
+        strict.with_line_info = false;
+        auto warning_only = strict;
+        warning_only.check_no_spills = false;
+        warning_only.check_no_local_memory = false;
+        if (*strict.check_no_local_memory)
+            warning_only.nvcc_flags->insert(warning_only.nvcc_flags->begin(), "--ptxas-options=--warn-on-local-memory-usage");
+        if (*strict.check_no_spills)
+            warning_only.nvcc_flags->insert(warning_only.nvcc_flags->begin(), "--ptxas-options=--warn-on-spills");
+        DJ_HOST_ASSERT(strict.get_flags() == warning_only.get_flags(),
+                       "policy test did not preserve the effective flags");
+        DJ_HOST_ASSERT(runtime.cache_key(source, strict) != runtime.cache_key(source, warning_only),
+                       "strict PTXAS policy shared a warning-only cache key");
+    }
+    auto unset_checks = runtime.default_compiler_options;
+    unset_checks.check_no_spills.reset();
+    unset_checks.check_no_local_memory.reset();
+    DJ_HOST_ASSERT(runtime.cache_key(source, unset_checks) == default_key,
+                   "unset checks must match disabled checks");
 
     const std::string binary_source_a = source + std::string("\n// binary\0A", 12);
     const std::string binary_source_b = source + std::string("\n// binary\0B", 12);
@@ -3037,6 +3069,30 @@ void test_ptxas_checks(const fs::path& cache_root) {
         "local memory usage");
     DJ_HOST_ASSERT(not fs::exists(local_artifact), "local-memory failure published a cache artifact");
     check_tmp_is_empty(ptxas_cache);
+
+    const auto check_cached_policy = [&](const CompilerOptions& check,
+                                         const std::string& warning_flag,
+                                         const std::string& diagnostic,
+                                         const std::string& expected_error,
+                                         const std::string& tag) {
+        auto strict = ptxas_runtime->default_compiler_options.override_with(check);
+        strict.with_line_info = false;
+        auto warning_only = strict;
+        warning_only.check_no_spills = false;
+        warning_only.check_no_local_memory = false;
+        warning_only.nvcc_flags->insert(warning_only.nvcc_flags->begin(), warning_flag);
+        DJ_HOST_ASSERT(strict.get_flags() == warning_only.get_flags(),
+                       "cached-policy test did not preserve the effective flags");
+        set_env("DEEP_JIT_TEST_PTXAS_OUTPUT", diagnostic);
+        expect_failure([&] { ptxas_runtime->compile_without_load(tag, source, strict); }, expected_error);
+        check_artifact(ptxas_runtime->compile_without_load(tag, source, warning_only), source);
+        expect_failure([&] { ptxas_runtime->compile_without_load(tag, source, strict); }, expected_error);
+        check_tmp_is_empty(ptxas_cache);
+    };
+    check_cached_policy(spill_check, "--ptxas-options=--warn-on-spills",
+                        "ptxas warning : Register is spilled to local memory", "register spills", "cached_spills");
+    check_cached_policy(local_memory_check, "--ptxas-options=--warn-on-local-memory-usage",
+                        "ptxas warning : Local memory used for function 'kernel'", "local memory usage", "cached_local");
     unset_env("DEEP_JIT_TEST_PTXAS_OUTPUT");
     unset_env("PTXAS_CHECK_JIT_CACHE_DIR");
     unset_env("PTXAS_CHECK_JIT_NVCC_COMPILER");
