@@ -813,7 +813,8 @@ void test_parser(const fs::path& cache_root) {
     expect_failure([&] { parser.parse_into_hash("#include \"cuda_runtime.h\"\n"); }, "non-standard include");
 
     deep_jit::Parser missing_parser({include_original}, {"test_cuda/"});
-    expect_failure([&] { missing_parser.parse_into_hash("#include <test_cuda/missing_tracked_header.cuh>\n"); }, "failed to open");
+    expect_failure([&] { missing_parser.parse_into_hash("#include <test_cuda/missing_tracked_header.cuh>\n"); },
+                   "failed to open: test_cuda/missing_tracked_header.cuh");
     DJ_HOST_ASSERT(missing_parser.visiting.empty(), "missing include left stale parser state");
 
     deep_jit::Parser conditional_parser({include_original}, {"test_cuda/"});
