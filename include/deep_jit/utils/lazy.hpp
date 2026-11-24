@@ -4,7 +4,12 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#if defined(_WIN32)
+#include <system_error>
+#include <deep_jit/utils/windows.hpp>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <deep_jit/utils/exception.hpp>
 
@@ -39,6 +44,20 @@ public:
 
 }  // namespace deep_jit
 
+#if defined(_WIN32)
+#define DJ_DECL_LAZY_DL_HANDLE(handle_func_name, lib)                                         \
+    inline HMODULE handle_func_name() {                                                      \
+        static HMODULE handle = [] {                                                        \
+            const auto value = ::LoadLibraryExA(lib, nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS); \
+            if (value == nullptr) {                                                         \
+                const std::error_code error(::GetLastError(), std::system_category());        \
+                DJ_PANIC("failed to load {}: {}", lib, error.message());                      \
+            }                                                                               \
+            return value;                                                                   \
+        }();                                                                                \
+        return handle;                                                                      \
+    }
+#else
 #define DJ_DECL_LAZY_DL_HANDLE(handle_func_name, lib)                                         \
     inline void* handle_func_name() {                                                         \
         static void* handle = [] {                                                            \
@@ -52,9 +71,26 @@ public:
         }();                                                                                  \
         return handle;                                                                        \
     }
+#endif
 
 #define DJ_STRINGIFY(name) #name
 
+#if defined(_WIN32)
+#define DJ_DECL_LAZY_DL_FUNCTION(handle_func_name, name)                                      \
+    template <typename... Args>                                                             \
+    static auto lazy_##name(Args&&... args) {                                                \
+        static const auto func = [] {                                                       \
+            const auto symbol = ::GetProcAddress(handle_func_name(), DJ_STRINGIFY(name));    \
+            if (symbol == nullptr) {                                                        \
+                const std::error_code error(::GetLastError(), std::system_category());       \
+                DJ_PANIC("failed to load {} from {}: {}", DJ_STRINGIFY(name),                 \
+                         #handle_func_name, error.message());                               \
+            }                                                                              \
+            return reinterpret_cast<decltype(&name)>(symbol);                               \
+        }();                                                                               \
+        return func(std::forward<Args>(args)...);                                            \
+    }
+#else
 #define DJ_DECL_LAZY_DL_FUNCTION(handle_func_name, name)                                                                   \
     template <typename... Args>                                                                                            \
     static auto lazy_##name(Args&&... args) {                                                                              \
@@ -69,3 +105,4 @@ public:
         }();                                                                                                               \
         return func(std::forward<Args>(args)...);                                                                          \
     }
+#endif

@@ -9,7 +9,11 @@ DJ_STATIC_ASSERT(CUDA_VERSION >= 12040, "DeepJIT requires CUDA 12.4 or newer");
 
 namespace deep_jit::cuda::driver {
 
+#if defined(_WIN32)
+DJ_DECL_LAZY_DL_HANDLE(get_cuda_handle, "nvcuda.dll");
+#else
 DJ_DECL_LAZY_DL_HANDLE(get_cuda_handle, "libcuda.so.1");
+#endif
 
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuGetErrorName);
 DJ_DECL_LAZY_DL_FUNCTION(get_cuda_handle, cuGetErrorString);
