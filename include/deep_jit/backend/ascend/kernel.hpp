@@ -18,7 +18,12 @@
 #include <utility>
 #include <vector>
 
+#include <torch/csrc/stable/version.h>
+#if defined(TORCH_VERSION_2_13_0) && TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
+#include <torch/csrc/stable/accelerator.h>
+#else
 #include <torch_npu/csrc/core/npu/NPUStream.h>
+#endif
 
 #include <deep_jit/backend/ascend/aicpu/bootstrap.hpp>
 #include <deep_jit/backend/ascend/driver.hpp>
@@ -271,9 +276,17 @@ public:
             config_ptr = &config;
         }
 
+#if defined(TORCH_VERSION_2_13_0) && TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
+        const aclrtStream stream = launch_options.stream
+            ? *launch_options.stream
+            : static_cast<aclrtStream>(
+                  torch::stable::accelerator::getCurrentStream(
+                      torch::stable::accelerator::getCurrentDeviceIndex()).nativeHandle());
+#else
         const aclrtStream stream = launch_options.stream
             ? *launch_options.stream
             : c10_npu::getCurrentNPUStream();
+#endif
         if (aicpu) {
             const aicpu::RequestHeader header{.operation = aicpu::Operation::Invoke, .module = aicpu_module};
             alignas(aicpu::RequestHeader) std::array<uint8_t, sizeof(header) + parameter_size> packet{};

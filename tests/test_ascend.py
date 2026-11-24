@@ -316,18 +316,22 @@ def run_worker():
     clear_external_jit_environment()
     ascend_home = get_ascend_home()
     torch_npu_dir = Path(torch_npu.__file__).resolve().parent
+    torch_major_minor = tuple(int(part) for part in torch.__version__.split('+')[0].split('.')[:2] if part.isdigit())
+    has_stable_stream = torch_major_minor >= (2, 13)
     include_paths = [
         ROOT / 'include',
         Path(sysconfig.get_paths()['include']),
         ascend_home / 'include',
         ascend_home / 'aarch64-linux/include',
-        torch_npu_dir / 'include',
-        torch_npu_dir / 'include/third_party/acl/inc',
+        *(() if has_stable_stream else (
+            torch_npu_dir / 'include',
+            torch_npu_dir / 'include/third_party/acl/inc',
+        )),
         *map(Path, torch_include_paths()),
     ]
     library_paths = [
         ascend_home / 'lib64',
-        torch_npu_dir / 'lib',
+        *(() if has_stable_stream else (torch_npu_dir / 'lib',)),
         *map(Path, torch_library_paths()),
     ]
 
@@ -355,9 +359,10 @@ def run_worker():
         for library_path in library_paths:
             extra_ldflags.append(f'-L{library_path}')
         extra_ldflags.extend([
-            '-ldl', '-lascendcl', '-ltorch_npu',
+            '-ldl', '-lascendcl',
+            *(() if has_stable_stream else ('-ltorch_npu',)),
             f'-Wl,-rpath,{ascend_home / "lib64"}',
-            f'-Wl,-rpath,{torch_npu_dir / "lib"}',
+            *(() if has_stable_stream else (f'-Wl,-rpath,{torch_npu_dir / "lib"}',)),
         ])
         module = load(
             name='deep_jit_ascend_test',
