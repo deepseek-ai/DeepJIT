@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <iostream>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -146,8 +148,84 @@ void test_run_in_iothread() {
     assert(deep_jit::run_in_iothread([] { return 7; }) == 7);
 }
 
+int forked_child_result(bool concurrent) {
+    ::alarm(3);  // Bound a hang in the child without affecting other processes.
+    try {
+        if (concurrent) {
+            std::vector<std::thread::id> ids(8);
+            std::vector<std::thread> threads;
+            for (size_t i = 0; i != ids.size(); ++i) {
+                threads.emplace_back([&, i] {
+                    ids[i] = deep_jit::run_in_iothread([] { return std::this_thread::get_id(); });
+                });
+            }
+            for (auto& thread : threads) thread.join();
+            for (const auto& id : ids) if (id != ids.front()) return 2;
+        } else if (deep_jit::run_in_iothread([] { return 42; }) != 42) {
+            return 3;
+        }
+        return 0;
+    } catch (...) {
+        return 4;
+    }
+}
+
+void wait_for_child(pid_t child) {
+    assert(child > 0);
+    int status = 0;
+    assert(::waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) and WEXITSTATUS(status) == 0);
+}
+
+void test_forked_shared_executor() {
+    const auto parent_worker = deep_jit::run_in_iothread([] { return std::this_thread::get_id(); });
+    auto child = ::fork();
+    assert(child >= 0);
+    if (child == 0) ::_exit(forked_child_result(true));
+    wait_for_child(child);
+    assert(deep_jit::run_in_iothread([] { return std::this_thread::get_id(); }) == parent_worker);
+
+    // Fork while a different parent thread holds the executor submission lock.
+    std::promise<void> entered, release;
+    auto entered_future = entered.get_future();
+    auto gate = release.get_future().share();
+    std::thread submitter([&] {
+        deep_jit::run_in_iothread([&] { entered.set_value(); gate.wait(); });
+    });
+    entered_future.wait();
+    child = ::fork();
+    assert(child >= 0);
+    if (child == 0) ::_exit(forked_child_result(false));
+    release.set_value();
+    submitter.join();
+    wait_for_child(child);
+
+    // A fork from the I/O worker must not treat the child's main thread as
+    // an I/O worker just because the thread-local marker was inherited.
+    deep_jit::run_in_iothread([] {
+        const auto child = ::fork();
+        assert(child >= 0);
+        if (child == 0) {
+            ::alarm(3);
+            try {
+                const auto caller = std::this_thread::get_id();
+                const auto worker = deep_jit::run_in_iothread([] { return std::this_thread::get_id(); });
+                ::_exit(worker == caller ? 5 : 0);
+            } catch (...) {
+                ::_exit(6);
+            }
+        }
+        wait_for_child(child);
+    });
+    assert(deep_jit::run_in_iothread([] { return 7; }) == 7);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
+        if (std::string_view(argv[1]) == "fork") {
+            test_forked_shared_executor();
+            return 0;
+        }
         if (std::string_view(argv[1]) == "disable-fallback") {
             const auto caller = std::this_thread::get_id();
             assert(deep_jit::detail::disable_cache_fallback());
