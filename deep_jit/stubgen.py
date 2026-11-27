@@ -310,6 +310,42 @@ def _has_unresolved_cpp_annotation(tree: ast.AST) -> bool:
     return False
 
 
+def _is_nullable_type(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and node.value is None:
+        return True
+    if isinstance(node, ast.Name) and node.id in ('Any', 'object'):
+        return True
+    if isinstance(node, ast.Attribute) and (
+        node.attr == 'Any' or (isinstance(node.value, ast.Name) and node.value.id == 'builtins' and node.attr == 'object')
+    ):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_nullable_type(node.left) or _is_nullable_type(node.right)
+    if isinstance(node, ast.Subscript):
+        base = node.value.attr if isinstance(node.value, ast.Attribute) else (
+            node.value.id if isinstance(node.value, ast.Name) else ''
+        )
+        if base == 'Optional':
+            return True
+        if base == 'Union':
+            sl = node.slice.value if hasattr(ast, 'Index') and isinstance(node.slice, ast.Index) else node.slice
+            elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
+            return any(_is_nullable_type(e) for e in elts)
+    return False
+
+
+def _normalize_nullable_default(part: str) -> str:
+    m = re.match(r'^([a-zA-Z_]\w*)\s*:\s*(.+?)\s*=\s*None\s*$', part)
+    if not m:
+        return part
+    name, ann = m.group(1), m.group(2).strip()
+    try:
+        node = ast.parse(ann, mode='eval').body
+    except SyntaxError:
+        return part
+    return part if _is_nullable_type(node) else f'{name}: {ann} | None = None'
+
+
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -365,6 +401,7 @@ def _postprocess_pyi(
         if meta is None:
             meta = cpp_funcs.get((cpp_cls, fn_name, argc)) or cpp_funcs.get((current_class, fn_name, argc))
 
+        changed = False
         if meta and meta[0] is not None and re.search(r'\barg0\s*:', params_str):
             c_names = meta[0]
             if len(c_names) == argc and all(c_names):
@@ -386,7 +423,15 @@ def _postprocess_pyi(
                         renamed.append(part)
                 if last_pos_only != -1 and '/' not in renamed:
                     renamed.insert(last_pos_only + 1, '/')
-                params_str = ', '.join(renamed)
+                parts = renamed
+                changed = True
+
+        normalized = [_normalize_nullable_default(p) for p in parts]
+        if normalized != parts:
+            parts = normalized
+            changed = True
+        if changed:
+            params_str = ', '.join(parts)
 
         out.append(f'{indent}def {fn_name}({params_str}) -> {ret_str}:')
         i += 1
