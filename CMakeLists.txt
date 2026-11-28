@@ -12,6 +12,7 @@ find_package(Torch REQUIRED)
 
 include_directories(
     include
+    ${pybind11_INCLUDE_DIRS}
     ${TORCH_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS}
 )
 link_directories(${TORCH_INSTALL_PREFIX}/lib ${CUDA_TOOLKIT_ROOT_DIR}/lib64 ${CUDA_TOOLKIT_ROOT_DIR}/lib64/stubs)
